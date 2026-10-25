@@ -40,9 +40,12 @@ while IFS= read -r file; do
     esac
 done <<<"$changed"
 
+run_step "shellcheck" shellcheck scripts/*.sh
+
 rust_changes=$((run_all + ${#lib_filters[@]} + ${#integration_tests[@]}))
 if ((rust_changes == 0)); then
     echo "dev-test: no test covers these files"
+    finish
     exit 0
 fi
 

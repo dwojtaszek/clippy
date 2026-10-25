@@ -30,6 +30,8 @@ fi
 changed=$(git diff --name-only "$base")
 
 run_step "clean tree" check_clean_tree
+run_step "shellcheck" shellcheck scripts/*.sh
+run_step "gate self-test" scripts/selftest-gates.sh
 run_step "fmt" cargo fmt --check
 run_step "clippy" cargo clippy --all-targets --all-features -- -D warnings
 run_step "tests" cargo test -q

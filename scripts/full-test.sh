@@ -20,6 +20,8 @@ fuzz_target() {
 
 echo "full-test: HEAD $(git rev-parse --short HEAD), $(git status --porcelain | wc -l) changed paths in the tree"
 
+run_step "shellcheck" shellcheck scripts/*.sh
+run_step "gate self-test" scripts/selftest-gates.sh
 run_step "fmt" cargo fmt --check
 run_step "clippy" cargo clippy --all-targets --all-features -- -D warnings
 run_step "tests" cargo test -q
