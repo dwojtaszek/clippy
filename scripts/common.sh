@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Shared setup and helpers for scripts/*.sh. Sourced by those scripts, not run on its own.
+
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# Lower bound for the number of tests. Raise it when tests are added. Lowering it needs the user's approval.
+MIN_TEST_COUNT=144
+
+failed_steps=()
+
+# run_step NAME COMMAND [ARGS...]: runs one check, records a failure, and keeps going.
+# With DRY_RUN=1 it prints the command instead of running it.
+run_step() {
+    local name=$1
+    shift
+    echo
+    echo "==> $name"
+    if [[ -n ${DRY_RUN:-} ]]; then
+        echo "    would run: $*"
+        return 0
+    fi
+    local started=$SECONDS
+    if "$@"; then
+        echo "<== $name: ok ($((SECONDS - started))s)"
+    else
+        echo "<== $name: FAILED ($((SECONDS - started))s)"
+        failed_steps+=("$name")
+    fi
+}
+
+# finish: prints the verdict and exits 1 when any step failed.
+finish() {
+    echo
+    if ((${#failed_steps[@]})); then
+        local IFS=', '
+        echo "FAILED: ${failed_steps[*]}"
+        exit 1
+    fi
+    echo "PASSED: every step ran and passed"
+}
+
+check_clean_tree() {
+    local changes
+    changes=$(git status --porcelain)
+    if [[ -n $changes ]]; then
+        echo "$changes"
+        echo "The tree has changes. Commit or stash them: this gate tests what you push."
+        return 1
+    fi
+}
+
+check_docs() {
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+}
+
+check_test_count() {
+    local count
+    count=$(cargo test -q -- --list 2>/dev/null | grep -c ': test$')
+    echo "tests listed: $count (floor: $MIN_TEST_COUNT)"
+    ((count >= MIN_TEST_COUNT))
+}
+
+# check_missed_mutants: fails on a timed-out mutant, or on a missed mutant that is not a known equivalent.
+check_missed_mutants() {
+    local status=0 line known
+    known=$(grep -v '^#' scripts/known-equivalent-mutants.txt)
+    if [[ -s mutants.out/timeout.txt ]]; then
+        echo "timed out:"
+        cat mutants.out/timeout.txt
+        status=1
+    fi
+    if [[ -s mutants.out/missed.txt ]]; then
+        while IFS= read -r line; do
+            if grep -Fxq -- "$line" <<<"$known"; then
+                echo "known equivalent: $line"
+            else
+                echo "MISSED: $line"
+                status=1
+            fi
+        done <mutants.out/missed.txt
+    fi
+    return $status
+}
+
+# run_mutants ARGS...: runs cargo-mutants, then judges its misses against the known-equivalent list.
+run_mutants() {
+    cargo mutants "$@"
+    local code=$?
+    case $code in
+        0) return 0 ;;
+        2 | 3) check_missed_mutants ;; # 2: some mutants were missed, 3: some timed out
+        *)
+            echo "cargo-mutants stopped with status $code"
+            return 1
+            ;;
+    esac
+}
+
+# changed_lines_mutants BASE: mutation-tests only the lines that differ from BASE.
+changed_lines_mutants() {
+    local base=$1 diff status
+    diff=$(mktemp) || return 1
+    git diff -U0 "$base" -- 'src/*.rs' >"$diff"
+    run_mutants --in-diff "$diff" --timeout 60
+    status=$?
+    rm -f "$diff"
+    return $status
+}

@@ -21,11 +21,21 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+## Test scripts (required)
+
+Agents must use these three scripts instead of typing the commands by hand. Run them from the repository root.
+
+- `scripts/dev-test.sh [base]`: the fast loop while coding. It runs fmt and only the tests that cover the files changed against `base` (default `HEAD`, so your uncommitted work). Run it after each edit.
+- `scripts/pre-pr-test.sh [base]`: run it before you push, and before you create or update a pull request. It needs a clean tree. It runs fmt, clippy, every test, the test-count floor, the doc build, `cargo deny` when dependencies changed, the price-key check when price or multiplier data changed, and mutants on the lines that differ from `base` (default `origin/main`). It stops after 120 seconds and fails if it does not finish. If it times out, make the change smaller or run `full-test.sh`.
+- `scripts/full-test.sh`: the full regression, with no time limit and no step skipped. Run it before you merge to `main`, and before the final reply for any change under `src/` or `tests/`. It runs every branch of the Testing section below: fmt, clippy, every test, the test-count floor, docs, `cargo deny`, the price-key check, Miri, mutants on the whole crate, both fuzz targets for 60 seconds each, and the 92% line-coverage floor. It runs every step even after a failure, then lists what failed.
+
+The test-count floor is `MIN_TEST_COUNT` in `scripts/common.sh`. Raise it when you add tests. Lowering it needs the user's approval. Known equivalent mutants are listed in `scripts/known-equivalent-mutants.txt`. Add a line there only after you name that mutant as equivalent, with the reason, in your reply.
+
 ## Testing
 
-Tight loop while coding: `cargo test`. It runs in about a second once built. Keep it green after every change.
+Tight loop while coding: `scripts/dev-test.sh` (see Test scripts above). Keep it green after every change.
 
-Before handing back, run the gate above, then every branch below that matches your change. Finish each branch before the reply.
+Before handing back, run the gate above, then every branch below that matches your change. Finish each branch before the reply. `scripts/full-test.sh` runs the gate and every branch in one command.
 
 - **Library logic changed** (`src/*.rs` except `main.rs`): add or update a unit test in the same file. A bug fix starts with a regression test that fails before the fix.
 - **Parser changed** (`droid`, `opencode`, `agy`, `prices`, `multipliers`): keep or add a proptest that the parser never panics on arbitrary input. `multipliers` and `prices` parse downloaded text, so after a change to either, also fuzz it: `mkdir -p fuzz/corpus/<target> && cargo +nightly fuzz run <target> fuzz/corpus/<target> fuzz/seeds/<target> -- -max_total_time=60 -dict=fuzz/dictionaries/<target>.dict`, with `<target>` as `multipliers_page` or `prices_table`. A crash is a bug: add a regression test that fails on the crash input, fix the code, and move the input into `fuzz/seeds/<target>/`.
@@ -33,7 +43,7 @@ Before handing back, run the gate above, then every branch below that matches yo
 - **Report output changed on purpose** (the golden test in `tests/golden.rs` fails): read the diff, then regenerate `tests/golden/report.txt` and `tests/golden/warnings.txt` with the command in `tests/golden/anonymize.py`. Changing those expected files is a test change, so it needs the user's approval first.
 - **Price or multiplier data changed** (`LIST_KEYS`, multiplier rows): confirm each key exists in the newest snapshot under `~/.local/share/droid-usage/prices/`.
 - **Pure logic changed**: run Miri on the nightly toolchain: `MIRIFLAGS=-Zmiri-disable-isolation PROPTEST_CASES=8 cargo +nightly miri test --lib -- --skip opencode --skip agy --skip app:: --skip download::` (about 2 minutes). Done means no undefined behavior is reported. `-Zmiri-disable-isolation` lets the file-based tests run (`scratch_dir()`, save and load). Without it Miri stops at `statx`. The skips drop the tests Miri cannot run: `opencode` and `agy` by name (SQLite), `app::` because the pipeline reads the OpenCode database, and `download::` because its loopback server needs sockets. While editing, add one module filter before the skips, for example `-- model:: --skip opencode --skip agy --skip app:: --skip download::` (about 3 seconds).
-- **Logic changed in a module**: run mutants once for all touched modules: `cargo mutants --file src/<a>.rs --file src/<b>.rs --timeout 180`. `.cargo/mutants.toml` caps lints, so a mutant that only trips a warning still builds and gets judged. Each missed mutant either gets a new test or is named in the reply as equivalent, with the reason. Known equivalent: `agy.rs:79` and `opencode.rs:20` (`|` vs `^`). Do not pass `--jobs 4`: it ran slower than the default.
+- **Logic changed in a module**: run mutants once for all touched modules: `cargo mutants --file src/<a>.rs --file src/<b>.rs --timeout 180`. `.cargo/mutants.toml` caps lints, so a mutant that only trips a warning still builds and gets judged. Each missed mutant either gets a new test or is named in the reply as equivalent, with the reason. Known equivalent: `agy.rs:79` and `opencode.rs:20` (`|` vs `^`), listed in `scripts/known-equivalent-mutants.txt`. Do not pass `--jobs 4`: it ran slower than the default.
 - **New logic before final handback**: run `cargo llvm-cov --summary-only`. Line coverage stays at or above 92% as a floor. Mutation results judge test quality, not coverage.
 - **Major change with a visual part** (report layout, colors, warnings, CLI output or flags): re-record `docs/demo.gif` with the `record-demo` skill (`.factory/skills/record-demo/SKILL.md`), check its preview frames, and commit the GIF with the change.
 - **Dependencies changed** (`Cargo.toml`): run `cargo deny check`. Licenses and advisories pass.
@@ -43,7 +53,7 @@ Testing rules:
 - Fixtures are inline strings, `scratch_dir()` folders, or the golden fixtures in `tests/golden/home`. Tests never read `HOME`, `~/.factory`, or the internet. The one network exception is the loopback server in `src/download.rs` tests: it binds `127.0.0.1` and answers only the test's own requests.
 - Assertions check the value that matters, not only that a call succeeded.
 - Do not add `#[ignore]` or weaken an assertion to get green. Report the failure instead.
-- The full mutant run (`cargo mutants --timeout 180`, about 5 minutes over the whole crate) is not a per-change step. Run it once per branch or on a schedule, and report its misses. If it keeps growing, split it with `--shard k/n`.
+- The full mutant run (`cargo mutants --timeout 180`, about 5 minutes over the whole crate) runs inside `scripts/full-test.sh`. `scripts/pre-pr-test.sh` mutates only the changed lines. Report every miss. If the full run keeps growing, split it with `--shard k/n`.
 - Before editing, record the test count: `cargo test -q -- --list 2>/dev/null | grep -c ': test$'`. Before handback, the count is equal or higher. Fix the code under test when a test fails.
 - A test is removed or changed only with the user's approval. If you think one is obsolete, ask, and name the test and the reason in the reply.
 
