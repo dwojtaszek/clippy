@@ -35,6 +35,7 @@ Before handing back, run the gate above, then every branch below that matches yo
 - **Pure logic changed**: run Miri on the nightly toolchain: `MIRIFLAGS=-Zmiri-disable-isolation PROPTEST_CASES=8 cargo +nightly miri test --lib -- --skip opencode --skip agy --skip app:: --skip download::` (about 2 minutes). Done means no undefined behavior is reported. `-Zmiri-disable-isolation` lets the file-based tests run (`scratch_dir()`, save and load). Without it Miri stops at `statx`. The skips drop the tests Miri cannot run: `opencode` and `agy` by name (SQLite), `app::` because the pipeline reads the OpenCode database, and `download::` because its loopback server needs sockets. While editing, add one module filter before the skips, for example `-- model:: --skip opencode --skip agy --skip app:: --skip download::` (about 3 seconds).
 - **Logic changed in a module**: run mutants once for all touched modules: `cargo mutants --file src/<a>.rs --file src/<b>.rs --timeout 180`. `.cargo/mutants.toml` caps lints, so a mutant that only trips a warning still builds and gets judged. Each missed mutant either gets a new test or is named in the reply as equivalent, with the reason. Known equivalent: `agy.rs:79` and `opencode.rs:20` (`|` vs `^`). Do not pass `--jobs 4`: it ran slower than the default.
 - **New logic before final handback**: run `cargo llvm-cov --summary-only`. Line coverage stays at or above 92% as a floor. Mutation results judge test quality, not coverage.
+- **Major change with a visual part** (report layout, colors, warnings, CLI output or flags): re-record `docs/demo.gif` with the `record-demo` skill (`.factory/skills/record-demo/SKILL.md`), check its preview frames, and commit the GIF with the change.
 - **Dependencies changed** (`Cargo.toml`): run `cargo deny check`. Licenses and advisories pass.
 
 Testing rules:
@@ -51,7 +52,7 @@ Known gaps, so do not assume they are covered:
 - `main.rs` is the entry point only: it reads the environment and the clock. The run itself is `app::run`, tested with a fake download. `tests/binary.rs` runs the built binary offline. Put new behavior in `app.rs` or a library module, not `main.rs`.
 - The live network is not tested. `download::fetch_both` is tested against a loopback server (error statuses, a cut-short body, a refused connection, a timeout), but no test fetches the real price table or models page. `refresh::refresh_prices` and `refresh::apply` are tested.
 - The golden fixtures are anonymized copies of real sessions from one machine. They keep counts, model names, and timestamps, so they show real shapes, not every shape a machine can produce.
-- No CI or pre-commit hooks, and the folder is not a git repo.
+- No CI or pre-commit hooks.
 - Fuzz targets cover only `multipliers` and `prices`. `droid`, `opencode`, and `agy` read local files and have proptests only.
 
 ## Swiss cheese layers
