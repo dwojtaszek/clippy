@@ -85,18 +85,33 @@ check_missed_mutants() {
     return $status
 }
 
+# check_mutants_judged: fails when mutants were found but all were unviable, so the tests judged none of them.
+check_mutants_judged() {
+    local judged unviable
+    judged=$(cat mutants.out/caught.txt mutants.out/missed.txt mutants.out/timeout.txt 2>/dev/null | wc -l)
+    unviable=$(cat mutants.out/unviable.txt 2>/dev/null | wc -l)
+    if ((judged == 0 && unviable > 0)); then
+        echo "no mutant was tested: $unviable found on these lines, and none of them compiles."
+        echo "The tests judged none of this code. See mutants.out/unviable.txt and mutants.out/log/."
+        return 1
+    fi
+}
+
 # run_mutants ARGS...: runs cargo-mutants, then judges its misses against the known-equivalent list.
 run_mutants() {
     cargo mutants "$@"
     local code=$?
+    local status=0
     case $code in
-        0) return 0 ;;
-        2 | 3) check_missed_mutants ;; # 2: some mutants were missed, 3: some timed out
+        0) ;;
+        2 | 3) check_missed_mutants || status=1 ;; # 2: some mutants were missed, 3: some timed out
         *)
             echo "cargo-mutants stopped with status $code"
             return 1
             ;;
     esac
+    check_mutants_judged || status=1
+    return $status
 }
 
 # changed_lines_mutants BASE: mutation-tests only the lines that differ from BASE.
