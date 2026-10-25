@@ -93,7 +93,7 @@ fn model_id(stored: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
+    use proptest::prelude::{any, prop_assert_eq, proptest};
 
     use super::*;
 
@@ -122,13 +122,32 @@ mod tests {
     #[test]
     fn reads_sessions_and_counts_unusable_rows() {
         let read = read_from(&fixture()).unwrap();
-        assert_eq!(read.sessions.len(), 3);
-        assert_eq!(read.skipped, 1);
+        assert_eq!(
+            read.sessions.len(),
+            3,
+            "the three usable session rows are read back from the database"
+        );
+        assert_eq!(
+            read.skipped, 1,
+            "exactly one unusable session row is counted as skipped"
+        );
 
         let first = &read.sessions[0];
-        assert_eq!(first.project.as_deref(), Some("/w/a"));
-        assert_eq!(first.model.as_deref(), Some("m1"));
-        assert_eq!(first.started.timestamp_millis(), 1_792_259_191_988);
+        assert_eq!(
+            first.project.as_deref(),
+            Some("/w/a"),
+            "the first session keeps the directory it was recorded with"
+        );
+        assert_eq!(
+            first.model.as_deref(),
+            Some("m1"),
+            "the first session keeps the model id from its model json"
+        );
+        assert_eq!(
+            first.started.timestamp_millis(),
+            1_792_259_191_988,
+            "the first session start time is the recorded millisecond timestamp"
+        );
         assert_eq!(
             first.tokens,
             Tokens {
@@ -136,7 +155,8 @@ mod tests {
                 output: 20,
                 cache_read: 30,
                 cache_write: 40
-            }
+            },
+            "the first session token counts match the recorded input output and cache values"
         );
     }
 
@@ -145,19 +165,44 @@ mod tests {
         let read = read_from(&fixture()).unwrap();
 
         let plain = &read.sessions[1];
-        assert_eq!(plain.project, None);
-        assert_eq!(plain.model.as_deref(), Some("plain-model"));
-        assert_eq!(plain.tokens, Tokens::default());
+        assert_eq!(
+            plain.project, None,
+            "a session with no directory has no project name"
+        );
+        assert_eq!(
+            plain.model.as_deref(),
+            Some("plain-model"),
+            "a plain model name is kept as the model unchanged"
+        );
+        assert_eq!(
+            plain.tokens,
+            Tokens::default(),
+            "a session with null token counts has zero tokens"
+        );
 
-        assert_eq!(read.sessions[2].tokens.input, 0);
+        assert_eq!(
+            read.sessions[2].tokens.input, 0,
+            "a negative token count is read as zero"
+        );
     }
 
     #[test]
     fn recorded_costs_are_kept_and_missing_costs_stay_empty() {
         let read = read_from(&fixture()).unwrap();
-        assert_eq!(read.sessions[0].cost_usd, Some(0.5));
-        assert_eq!(read.sessions[1].cost_usd, None);
-        assert_eq!(read.sessions[2].cost_usd, Some(0.0));
+        assert_eq!(
+            read.sessions[0].cost_usd,
+            Some(0.5),
+            "a recorded session cost is kept as given"
+        );
+        assert_eq!(
+            read.sessions[1].cost_usd, None,
+            "a session with no recorded cost has no cost"
+        );
+        assert_eq!(
+            read.sessions[2].cost_usd,
+            Some(0.0),
+            "a recorded zero cost is kept as zero and not dropped"
+        );
     }
 
     #[test]
@@ -180,13 +225,25 @@ mod tests {
         .unwrap();
         let read = read_from(&conn).unwrap();
         let costs: Vec<Option<f64>> = read.sessions.iter().map(|s| s.cost_usd).collect();
-        assert_eq!(costs, [None, None, Some(0.0)]);
+        assert_eq!(
+            costs,
+            [None, None, Some(0.0)],
+            "negative and infinite recorded costs are dropped while zero is kept"
+        );
     }
 
     #[test]
     fn model_id_reads_the_id_field_only() {
-        assert_eq!(model_id(r#"{"id":"m"}"#).as_deref(), Some("m"));
-        assert_eq!(model_id(r#"{"other":1}"#), None);
+        assert_eq!(
+            model_id(r#"{"id":"m"}"#).as_deref(),
+            Some("m"),
+            "the model id is read from the id field of the model json"
+        );
+        assert_eq!(
+            model_id(r#"{"other":1}"#),
+            None,
+            "a model json without an id field gives no model id"
+        );
     }
 
     #[test]
@@ -206,10 +263,15 @@ mod tests {
         .unwrap();
 
         let read = read_from(&conn).unwrap();
-        assert_eq!(read.sessions.len(), 1);
+        assert_eq!(
+            read.sessions.len(),
+            1,
+            "the session row is read when timestamps are stored as integers"
+        );
         assert_eq!(
             read.sessions[0].started.timestamp_millis(),
-            1_792_259_191_988
+            1_792_259_191_988,
+            "an integer timestamp is read as the same millisecond time"
         );
     }
 

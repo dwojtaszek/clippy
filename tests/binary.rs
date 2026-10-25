@@ -1,9 +1,8 @@
 //! Runs the built binary against a scratch home folder, so the entry point is tested too.
 
 // Setup helpers unwrap on purpose: a failed setup should fail the test loudly.
-#![allow(
+#![expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "integration tests fail loudly on setup errors"
 )]
 
@@ -40,7 +39,10 @@ fn unknown_argument_fails_and_is_named() {
     let home = ScratchDir::new("binary-bad-arg");
     let output = run_binary(&["--bogus"], &home);
 
-    assert!(!output.status.success());
+    assert!(
+        !output.status.success(),
+        "an unknown flag makes the run exit with a failure status"
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("--bogus"), "{stderr}");
 }

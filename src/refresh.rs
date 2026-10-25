@@ -5,6 +5,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::download::Downloads;
 use crate::{multipliers, prices};
 
 /// Parses both downloads, then saves both snapshots.
@@ -34,17 +35,23 @@ pub fn refresh_prices(
     prices_dir: &Path,
     multipliers_dir: &Path,
     now: DateTime<Utc>,
-    download: impl FnOnce() -> Result<(String, String), String>,
+    download: impl FnOnce() -> Result<Downloads, Box<dyn Error>>,
 ) -> Option<String> {
     // A missing multiplier snapshot forces a download, so Droid costs start on the first run after an upgrade.
     let have_multipliers = multipliers::load(multipliers_dir).is_ok_and(|book| !book.is_empty());
     if have_multipliers && !prices::is_stale(prices_dir, now) {
         return None;
     }
-    let outcome = download().and_then(|(table, page)| {
-        apply(prices_dir, multipliers_dir, now, &table, &page).map_err(|err| err.to_string())
-    });
-    outcome
+    download()
+        .and_then(|downloads| {
+            apply(
+                prices_dir,
+                multipliers_dir,
+                now,
+                &downloads.table,
+                &downloads.page,
+            )
+        })
         .err()
         .map(|err| format!("price download failed, using saved snapshots: {err}"))
 }
@@ -80,15 +87,21 @@ mod tests {
             prices::load(&prices_dir)
                 .unwrap()
                 .rate_at("gpt-5.6-sol", at())
-                .is_some()
+                .is_some(),
+            "the saved price table has a rate for the model at the check time"
         );
         assert_eq!(
             multipliers::load(&multipliers_dir)
                 .unwrap()
                 .multiplier_at("gpt-5.6-sol", at()),
-            Some(1.6)
+            Some(1.6),
+            "the saved multiplier table gives the promotional multiplier for the model"
         );
-        assert_eq!(last_checked(&prices_dir), Some(at()));
+        assert_eq!(
+            last_checked(&prices_dir),
+            Some(at()),
+            "the price snapshot records the time of the successful check"
+        );
     }
 
     #[test]
@@ -99,22 +112,48 @@ mod tests {
             "Promotional pricing. GPT-5.6 Sol",
             "Promotional pricing. Ghost",
         );
-        assert!(apply(&prices_dir, &multipliers_dir, at(), SAMPLE_TABLE, &bad_page).is_err());
+        assert!(
+            apply(&prices_dir, &multipliers_dir, at(), SAMPLE_TABLE, &bad_page).is_err(),
+            "a page missing the expected model name fails and saves nothing"
+        );
 
-        assert!(prices::load(&prices_dir).unwrap().is_empty());
-        assert!(multipliers::load(&multipliers_dir).unwrap().is_empty());
-        assert_eq!(last_checked(&prices_dir), None);
+        assert!(
+            prices::load(&prices_dir).unwrap().is_empty(),
+            "no price snapshot is written when the page is bad"
+        );
+        assert!(
+            multipliers::load(&multipliers_dir).unwrap().is_empty(),
+            "no multiplier snapshot is written when the page is bad"
+        );
+        assert_eq!(
+            last_checked(&prices_dir),
+            None,
+            "the check time is not recorded when the page is bad"
+        );
     }
 
     #[test]
     fn a_bad_table_saves_neither_snapshot() {
         let root = ScratchDir::new("refresh-bad-table");
         let (prices_dir, multipliers_dir) = (root.join("prices"), root.join("multipliers"));
-        assert!(apply(&prices_dir, &multipliers_dir, at(), "not json", SAMPLE_PAGE).is_err());
+        assert!(
+            apply(&prices_dir, &multipliers_dir, at(), "not json", SAMPLE_PAGE).is_err(),
+            "a table that is not valid json fails and saves nothing"
+        );
 
-        assert!(prices::load(&prices_dir).unwrap().is_empty());
-        assert!(multipliers::load(&multipliers_dir).unwrap().is_empty());
-        assert_eq!(last_checked(&prices_dir), None);
+        assert!(
+            prices::load(&prices_dir).unwrap().is_empty(),
+            "no price snapshot is written when the table is bad"
+        );
+        assert!(
+            multipliers::load(&multipliers_dir).unwrap().is_empty(),
+            "no multiplier snapshot is written when the table is bad"
+        );
+        assert_eq!(
+            last_checked(&prices_dir),
+            None,
+            "the check time is not recorded when the table is bad"
+        );
     }
 
     #[test]
@@ -133,9 +172,14 @@ mod tests {
         let later = at() + TimeDelta::hours(23);
         assert_eq!(
             refresh_prices(&prices_dir, &multipliers_dir, later, no_download),
-            None
+            None,
+            "a check within a day with snapshots present does not download"
         );
-        assert_eq!(last_checked(&prices_dir), Some(at()));
+        assert_eq!(
+            last_checked(&prices_dir),
+            Some(at()),
+            "a fresh check leaves the recorded check time unchanged"
+        );
     }
 
     #[test]
@@ -152,12 +196,22 @@ mod tests {
         .unwrap();
 
         let later = at() + TimeDelta::hours(25);
-        let download = || Ok((SAMPLE_TABLE.to_owned(), SAMPLE_PAGE.to_owned()));
+        let download = || {
+            Ok(Downloads {
+                table: SAMPLE_TABLE.to_owned(),
+                page: SAMPLE_PAGE.to_owned(),
+            })
+        };
         assert_eq!(
             refresh_prices(&prices_dir, &multipliers_dir, later, download),
-            None
+            None,
+            "a check older than a day triggers a download with no warning"
         );
-        assert_eq!(last_checked(&prices_dir), Some(later));
+        assert_eq!(
+            last_checked(&prices_dir),
+            Some(later),
+            "the recorded check time moves to the time of the new download"
+        );
     }
 
     #[test]
@@ -174,16 +228,23 @@ mod tests {
         .unwrap();
         fs::remove_dir_all(&multipliers_dir).unwrap();
 
-        let download = || Ok((SAMPLE_TABLE.to_owned(), SAMPLE_PAGE.to_owned()));
+        let download = || {
+            Ok(Downloads {
+                table: SAMPLE_TABLE.to_owned(),
+                page: SAMPLE_PAGE.to_owned(),
+            })
+        };
         assert_eq!(
             refresh_prices(&prices_dir, &multipliers_dir, at(), download),
-            None
+            None,
+            "a missing multiplier snapshot triggers a download with no warning"
         );
         assert_eq!(
             multipliers::load(&multipliers_dir)
                 .unwrap()
                 .multiplier_at("gpt-5.6-sol", at()),
-            Some(1.6)
+            Some(1.6),
+            "the re-downloaded multiplier snapshot gives the promotional multiplier"
         );
     }
 
@@ -202,12 +263,17 @@ mod tests {
 
         let later = at() + TimeDelta::hours(25);
         let warning = refresh_prices(&prices_dir, &multipliers_dir, later, || {
-            Err("connection refused".to_owned())
+            Err("connection refused".into())
         });
         assert_eq!(
             warning.as_deref(),
-            Some("price download failed, using saved snapshots: connection refused")
+            Some("price download failed, using saved snapshots: connection refused"),
+            "a failed download returns a warning naming the error and keeps old snapshots"
         );
-        assert_eq!(last_checked(&prices_dir), Some(at()));
+        assert_eq!(
+            last_checked(&prices_dir),
+            Some(at()),
+            "a failed download does not move the recorded check time"
+        );
     }
 }

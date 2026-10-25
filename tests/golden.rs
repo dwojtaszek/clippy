@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
-use droid_usage::app;
+use droid_usage::app::{self, Mode};
+use droid_usage::report::Colors;
 
 #[test]
 fn report_matches_the_golden_output_for_anonymized_sessions() {
@@ -15,10 +16,10 @@ fn report_matches_the_golden_output_for_anonymized_sessions() {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     app::run(
         &golden.join("home"),
-        true,
+        Mode::Offline,
         now,
-        false,
-        || Err::<(String, String), String>("network should not be used".to_owned()),
+        Colors::Off,
+        || Err("network should not be used".into()),
         &mut out,
         &mut err,
     )
@@ -26,6 +27,14 @@ fn report_matches_the_golden_output_for_anonymized_sessions() {
 
     let want_report = fs::read_to_string(golden.join("report.txt")).unwrap();
     let want_warnings = fs::read_to_string(golden.join("warnings.txt")).unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), want_report);
-    assert_eq!(String::from_utf8(err).unwrap(), want_warnings);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        want_report,
+        "the report output matches the saved golden report file"
+    );
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        want_warnings,
+        "the warnings output matches the saved golden warnings file"
+    );
 }

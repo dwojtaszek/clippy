@@ -83,7 +83,7 @@ pub fn parse_header(reader: impl BufRead) -> Option<(Option<String>, DateTime<Ut
 mod tests {
     use std::io::Cursor;
 
-    use proptest::prelude::*;
+    use proptest::prelude::proptest;
 
     use super::*;
 
@@ -98,21 +98,37 @@ mod tests {
                 output: 4,
                 cache_read: 2,
                 cache_write: 1
-            }
+            },
+            "settings usage comes from the session's own token fields"
         );
-        assert_eq!(model.as_deref(), Some("glm-5.3"));
+        assert_eq!(
+            model.as_deref(),
+            Some("glm-5.3"),
+            "the model name comes from the settings model field"
+        );
     }
 
     #[test]
     fn settings_without_usage_count_as_zero() {
         let (tokens, model) = parse_settings(r#"{"model":"x"}"#).unwrap();
-        assert_eq!(tokens, Tokens::default());
-        assert_eq!(model.as_deref(), Some("x"));
+        assert_eq!(
+            tokens,
+            Tokens::default(),
+            "settings without usage give zero tokens"
+        );
+        assert_eq!(
+            model.as_deref(),
+            Some("x"),
+            "settings without usage still report the model"
+        );
     }
 
     #[test]
     fn settings_reject_invalid_json() {
-        assert!(parse_settings("{not json").is_none());
+        assert!(
+            parse_settings("{not json").is_none(),
+            "invalid settings json gives no result"
+        );
     }
 
     #[test]
@@ -126,18 +142,29 @@ mod tests {
             "\n",
         );
         let (project, started) = parse_header(Cursor::new(text)).unwrap();
-        assert_eq!(project.as_deref(), Some("/work/app"));
-        assert_eq!(started.to_rfc3339(), "2026-10-05T15:04:35+00:00");
+        assert_eq!(
+            project.as_deref(),
+            Some("/work/app"),
+            "the project comes from the session start cwd"
+        );
+        assert_eq!(
+            started.to_rfc3339(),
+            "2026-10-05T15:04:35+00:00",
+            "the start time is the first message timestamp in utc"
+        );
     }
 
     #[test]
     fn header_needs_a_message_timestamp_and_skips_bad_lines() {
         let no_timestamp = "garbage\n{\"type\":\"session_start\",\"cwd\":\"/p\"}\n";
-        assert!(parse_header(Cursor::new(no_timestamp)).is_none());
+        assert!(
+            parse_header(Cursor::new(no_timestamp)).is_none(),
+            "a header without a message timestamp gives no result"
+        );
 
         let no_project = "garbage\n{\"type\":\"message\",\"timestamp\":\"2026-10-05T15:04:35Z\"}\n";
         let (project, _) = parse_header(Cursor::new(no_project)).unwrap();
-        assert_eq!(project, None);
+        assert_eq!(project, None, "a header without a cwd gives no project");
     }
 
     #[test]
@@ -151,7 +178,11 @@ mod tests {
             "\n",
         );
         let (project, _) = parse_header(Cursor::new(text)).unwrap();
-        assert_eq!(project.as_deref(), Some("/first"));
+        assert_eq!(
+            project.as_deref(),
+            Some("/first"),
+            "the first project seen is kept over later ones"
+        );
     }
 
     proptest! {

@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Session, Tokens};
 
+/// Rows in the Top projects table. A larger value makes only that table longer.
 const TOP_PROJECTS: usize = 10;
 
 /// Longest project name shown. Longer paths keep their start and end, so the project folder stays visible.
@@ -18,6 +19,15 @@ const PROJECT_WIDTH: usize = 40;
 
 /// Background for every other data row, so wide tables are easy to follow.
 const STRIPE: Color = Color::AnsiValue(236);
+
+/// Whether the report is colored: bold headings, colored headers, and striped rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colors {
+    /// Escape codes for color and bold are written.
+    On,
+    /// Plain text with no escape codes.
+    Off,
+}
 
 /// Counts and sums for a group of sessions.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -94,11 +104,8 @@ pub fn weekly(sessions: &[Session]) -> Vec<(NaiveDate, Totals)> {
 
 /// Totals for each key that `key` returns for a session.
 #[must_use]
-pub fn group_by(
-    sessions: &[Session],
-    key: impl Fn(&Session) -> String,
-) -> BTreeMap<String, Totals> {
-    let mut groups: BTreeMap<String, Totals> = BTreeMap::new();
+pub fn group_by<K: Ord>(sessions: &[Session], key: impl Fn(&Session) -> K) -> BTreeMap<K, Totals> {
+    let mut groups: BTreeMap<K, Totals> = BTreeMap::new();
     for session in sessions {
         groups.entry(key(session)).or_default().add_session(session);
     }
@@ -107,7 +114,7 @@ pub fn group_by(
 
 /// Percent change from `previous` to `current`. None when there is no previous value to compare against.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "token counts stay far below 2^53, and the result is a rounded percentage"
 )]
@@ -115,9 +122,9 @@ pub fn change_percent(previous: u64, current: u64) -> Option<f64> {
     (previous > 0).then(|| (current as f64 - previous as f64) * 100.0 / previous as f64)
 }
 
-/// Groups sorted by session count (most first), then by name.
-fn ranked(groups: BTreeMap<String, Totals>) -> Vec<(String, Totals)> {
-    let mut rows: Vec<(String, Totals)> = groups.into_iter().collect();
+/// Groups sorted by session count (most first), then by key. A missing name (`None`) sorts before any name.
+fn ranked<K: Ord>(groups: BTreeMap<K, Totals>) -> Vec<(K, Totals)> {
+    let mut rows: Vec<(K, Totals)> = groups.into_iter().collect();
     rows.sort_by(|a, b| b.1.sessions.cmp(&a.1.sessions).then_with(|| a.0.cmp(&b.0)));
     rows
 }
@@ -132,7 +139,7 @@ fn money(totals: &Totals) -> String {
 }
 
 /// The cost per million tokens over the priced sessions, or `-` when none of them has tokens.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "token counts stay far below 2^53, and the result is an estimate"
 )]
@@ -146,16 +153,27 @@ fn per_million(totals: &Totals) -> String {
 
 /// Rows for the Models table: the summary cells plus the cost per million tokens.
 fn model_rows(sessions: &[Session]) -> Vec<Vec<String>> {
-    ranked(group_by(sessions, |s| {
-        s.model.clone().unwrap_or_else(|| "(unknown)".to_owned())
-    }))
-    .into_iter()
-    .map(|(model, totals)| {
-        let mut cells = summary_cells(model, &totals);
-        cells.push(per_million(&totals));
-        cells
-    })
-    .collect()
+    ranked(group_by(sessions, |s| s.model.clone()))
+        .into_iter()
+        .map(|(model, totals)| {
+            let label = model.unwrap_or_else(|| "(unknown)".to_owned());
+            let mut cells = summary_cells(label, &totals);
+            cells.push(per_million(&totals));
+            cells
+        })
+        .collect()
+}
+
+/// Rows for the Top projects table: the busiest projects, at most `TOP_PROJECTS` of them.
+fn project_rows(sessions: &[Session]) -> Vec<Vec<String>> {
+    ranked(group_by(sessions, |s| s.project.clone()))
+        .into_iter()
+        .take(TOP_PROJECTS)
+        .map(|(project, totals)| {
+            let label = project.unwrap_or_else(|| "(unknown)".to_owned());
+            summary_cells(shorten(&label, PROJECT_WIDTH), &totals)
+        })
+        .collect()
 }
 
 /// Totals over every session.
@@ -210,8 +228,8 @@ enum Kind {
     Total,
 }
 
-/// Styles a row's cells. Colors and bold are added only when `color` is set. Alignment is always applied.
-fn styled_row(cells: Vec<String>, numeric_from: usize, kind: Kind, color: bool) -> Vec<Cell> {
+/// Styles a row's cells. Colors and bold are added only when `colors` is on. Alignment is always applied.
+fn styled_row(cells: Vec<String>, numeric_from: usize, kind: Kind, colors: Colors) -> Vec<Cell> {
     cells
         .into_iter()
         .enumerate()
@@ -220,7 +238,7 @@ fn styled_row(cells: Vec<String>, numeric_from: usize, kind: Kind, color: bool) 
             if column >= numeric_from {
                 cell = cell.set_alignment(CellAlignment::Right);
             }
-            if !color {
+            if colors == Colors::Off {
                 return cell;
             }
             match kind {
@@ -260,7 +278,8 @@ fn shorten(text: &str, max: usize) -> String {
 }
 
 /// Writes a heading, the table, and a blank line.
-fn write_section(out: &mut impl Write, section: Section, color: bool) -> io::Result<()> {
+fn write_section(out: &mut impl Write, section: Section, colors: Colors) -> io::Result<()> {
+    let color = colors == Colors::On;
     writeln!(
         out,
         "{}",
@@ -302,22 +321,22 @@ fn write_section(out: &mut impl Write, section: Section, color: bool) -> io::Res
             cells,
             section.numeric_from,
             Kind::Body(index),
-            color,
+            colors,
         ));
     }
     if let Some(total) = section.total {
-        let _ = table.add_row(styled_row(total, section.numeric_from, Kind::Total, color));
+        let _ = table.add_row(styled_row(total, section.numeric_from, Kind::Total, colors));
     }
     writeln!(out, "{table}")?;
     writeln!(out)
 }
 
-/// Writes the full report for `sessions`. `color` turns on bold headings, colored headers, and striped rows.
+/// Writes the full report for `sessions`. `colors` decides whether the report uses color.
 ///
 /// # Errors
 ///
 /// Returns an error when writing to `out` fails.
-pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> io::Result<()> {
+pub fn write_report(out: &mut impl Write, sessions: &[Session], colors: Colors) -> io::Result<()> {
     let sources = ranked(group_by(sessions, |s| s.source.to_string()))
         .into_iter()
         .map(|(name, totals)| summary_cells(name, &totals))
@@ -331,7 +350,7 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
             rows: sources,
             total: None,
         },
-        color,
+        colors,
     )?;
 
     let weeks = weekly(sessions);
@@ -364,7 +383,7 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
             rows: week_rows,
             total,
         },
-        color,
+        colors,
     )?;
 
     write_section(
@@ -383,16 +402,10 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
             rows: model_rows(sessions),
             total: None,
         },
-        color,
+        colors,
     )?;
 
-    let projects = ranked(group_by(sessions, |s| {
-        s.project.clone().unwrap_or_else(|| "(unknown)".to_owned())
-    }))
-    .into_iter()
-    .take(TOP_PROJECTS)
-    .map(|(project, totals)| summary_cells(shorten(&project, PROJECT_WIDTH), &totals))
-    .collect();
+    let projects = project_rows(sessions);
     write_section(
         out,
         Section {
@@ -402,7 +415,7 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
             rows: projects,
             total: None,
         },
-        color,
+        colors,
     )?;
 
     if all.unpriced > 0 {
@@ -413,7 +426,10 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
         writeln!(
             out,
             "{}",
-            Style::new().dim().force_styling(color).apply_to(note)
+            Style::new()
+                .dim()
+                .force_styling(colors == Colors::On)
+                .apply_to(note)
         )?;
     }
     Ok(())
@@ -422,7 +438,7 @@ pub fn write_report(out: &mut impl Write, sessions: &[Session], color: bool) -> 
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
-    use proptest::prelude::*;
+    use proptest::prelude::{prop, prop_assert, prop_assert_eq, proptest};
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
@@ -485,9 +501,21 @@ mod tests {
     #[test]
     fn week_starts_on_the_monday() {
         // 2026-10-24 is a Saturday, 2026-10-25 a Sunday, 2026-10-19 a Monday.
-        assert_eq!(week_start(date(2026, 10, 24)), date(2026, 10, 19));
-        assert_eq!(week_start(date(2026, 10, 25)), date(2026, 10, 19));
-        assert_eq!(week_start(date(2026, 10, 19)), date(2026, 10, 19));
+        assert_eq!(
+            week_start(date(2026, 10, 24)),
+            date(2026, 10, 19),
+            "a saturday maps to the monday that starts its week"
+        );
+        assert_eq!(
+            week_start(date(2026, 10, 25)),
+            date(2026, 10, 19),
+            "a sunday maps to the monday that starts its week"
+        );
+        assert_eq!(
+            week_start(date(2026, 10, 19)),
+            date(2026, 10, 19),
+            "a monday maps to itself as the start of its week"
+        );
     }
 
     #[test]
@@ -504,7 +532,11 @@ mod tests {
             },
         ];
         let starts: Vec<NaiveDate> = weekly(&sessions).iter().map(|(start, _)| *start).collect();
-        assert_eq!(starts, [date(2026, 10, 12), date(2026, 10, 19)]);
+        assert_eq!(
+            starts,
+            [date(2026, 10, 12), date(2026, 10, 19)],
+            "a session at monday midnight utc starts the following week"
+        );
     }
 
     #[test]
@@ -517,22 +549,42 @@ mod tests {
         let starts: Vec<NaiveDate> = weeks.iter().map(|(start, _)| *start).collect();
         assert_eq!(
             starts,
-            [date(2026, 10, 5), date(2026, 10, 12), date(2026, 10, 19)]
+            [date(2026, 10, 5), date(2026, 10, 12), date(2026, 10, 19)],
+            "weeks with no sessions still appear in the weekly list"
         );
-        assert_eq!(weeks[1].1, Totals::default());
-        assert_eq!(weeks[2].1.tokens.input, 300);
+        assert_eq!(
+            weeks[1].1,
+            Totals::default(),
+            "a week with no sessions has empty totals"
+        );
+        assert_eq!(
+            weeks[2].1.tokens.input, 300,
+            "the week holding a session counts its input tokens"
+        );
     }
 
     #[test]
     fn weekly_is_empty_without_sessions() {
-        assert_eq!(weekly(&[]), Vec::new());
+        assert_eq!(weekly(&[]), Vec::new(), "no sessions give no weekly rows");
     }
 
     #[test]
     fn change_percent_needs_a_previous_value() {
-        assert_eq!(change_percent(0, 5), None);
-        assert_eq!(change_percent(100, 150), Some(50.0));
-        assert_eq!(change_percent(200, 100), Some(-50.0));
+        assert_eq!(
+            change_percent(0, 5),
+            None,
+            "no change percent when the previous value is zero"
+        );
+        assert_eq!(
+            change_percent(100, 150),
+            Some(50.0),
+            "change percent is the rise from the previous value"
+        );
+        assert_eq!(
+            change_percent(200, 100),
+            Some(-50.0),
+            "change percent is the fall from the previous value"
+        );
     }
 
     #[test]
@@ -542,8 +594,14 @@ mod tests {
             session_on(date(2026, 10, 6), 2),
         ];
         let groups = group_by(&sessions, |s| s.source.to_string());
-        assert_eq!(groups["droid"].sessions, 2);
-        assert_eq!(groups["droid"].tokens.input, 3);
+        assert_eq!(
+            groups["droid"].sessions, 2,
+            "sessions are counted per group key"
+        );
+        assert_eq!(
+            groups["droid"].tokens.input, 3,
+            "token input is summed per group key"
+        );
     }
 
     #[test]
@@ -553,8 +611,14 @@ mod tests {
             session_on(date(2026, 10, 6), 4),
         ];
         let groups = group_by(&sessions, |s| s.source.to_string());
-        assert_eq!(groups["droid"].sessions, 2);
-        assert_eq!(groups["droid"].with_usage, 1);
+        assert_eq!(
+            groups["droid"].sessions, 2,
+            "every session in a group is counted even without tokens"
+        );
+        assert_eq!(
+            groups["droid"].with_usage, 1,
+            "with usage counts only the sessions that have tokens"
+        );
     }
 
     #[test]
@@ -569,11 +633,28 @@ mod tests {
         for session in [&priced, &unpriced, &free_and_unknown] {
             totals.add_session(session);
         }
-        assert_eq!(totals.priced, 1);
-        assert_eq!(totals.unpriced, 1);
-        assert!((totals.cost_usd - 1.5).abs() < 1e-12);
-        assert_eq!(money(&totals), "1.50");
-        assert_eq!(money(&Totals::default()), "-");
+        assert_eq!(
+            totals.priced, 1,
+            "sessions with a cost are counted as priced"
+        );
+        assert_eq!(
+            totals.unpriced, 1,
+            "a session without a cost is counted as unpriced"
+        );
+        assert!(
+            (totals.cost_usd - 1.5).abs() < 1e-12,
+            "cost is summed over the priced sessions only"
+        );
+        assert_eq!(
+            money(&totals),
+            "1.50",
+            "money shows the summed cost with two decimals"
+        );
+        assert_eq!(
+            money(&Totals::default()),
+            "-",
+            "money shows a dash when there is no cost"
+        );
     }
 
     #[test]
@@ -587,26 +668,61 @@ mod tests {
         for session in [&priced, &unpriced] {
             totals.add_session(session);
         }
-        assert_eq!(per_million(&totals), "2.000");
-        assert_eq!(per_million(&Totals::default()), "-");
+        assert_eq!(
+            per_million(&totals),
+            "2.000",
+            "cost per million tokens leaves out unpriced session tokens"
+        );
+        assert_eq!(
+            per_million(&Totals::default()),
+            "-",
+            "cost per million shows a dash when there are no tokens"
+        );
     }
 
     #[test]
     fn report_shows_week_change_costs_and_unknown_labels() {
         let mut out = Vec::new();
-        write_report(&mut out, &two_weeks(), false).unwrap();
+        write_report(&mut out, &two_weeks(), Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("By source"));
-        assert!(text.contains("Weekly"));
-        assert!(text.contains("Models"));
-        assert!(text.contains("Top projects"));
-        assert!(text.contains("cost per 1M tokens"));
-        assert!(text.contains("+50.0%"));
-        assert!(text.contains("(unknown)"));
-        assert!(text.contains("with usage"));
-        assert!(text.contains("cost usd"));
-        assert!(text.contains("0.25"));
-        assert!(text.contains("Note: 1 session(s) with usage have no cost"));
+        assert!(
+            text.contains("By source"),
+            "the report has a by source section"
+        );
+        assert!(text.contains("Weekly"), "the report has a weekly section");
+        assert!(text.contains("Models"), "the report has a models section");
+        assert!(
+            text.contains("Top projects"),
+            "the report has a top projects section"
+        );
+        assert!(
+            text.contains("cost per 1M tokens"),
+            "the report has a cost per 1M tokens column"
+        );
+        assert!(
+            text.contains("+50.0%"),
+            "the report shows the week over week change"
+        );
+        assert!(
+            text.contains("(unknown)"),
+            "sessions with no model or project are labelled unknown"
+        );
+        assert!(
+            text.contains("with usage"),
+            "the report has a with usage column"
+        );
+        assert!(
+            text.contains("cost usd"),
+            "the report has a cost usd column"
+        );
+        assert!(
+            text.contains("0.25"),
+            "the report shows the summed cost of 0.25"
+        );
+        assert!(
+            text.contains("Note: 1 session(s) with usage have no cost"),
+            "the report warns how many usage sessions lack a cost"
+        );
     }
 
     #[test]
@@ -617,13 +733,55 @@ mod tests {
             ..session_on(date(2026, 10, 5), 1_000_000)
         };
         let mut out = Vec::new();
-        write_report(&mut out, &[priced], false).unwrap();
+        write_report(&mut out, &[priced], Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             cells_of(&lines, "gpt-x"),
-            ["gpt-x", "1", "1", "1000000", "2.00", "2.000"]
+            ["gpt-x", "1", "1", "1000000", "2.00", "2.000"],
+            "the model row shows counts, tokens, cost and cost per million"
         );
+    }
+
+    #[test]
+    fn a_model_named_unknown_is_a_separate_row_from_a_missing_model() {
+        let missing = session_on(date(2026, 10, 5), 10);
+        let named = Session {
+            model: Some("(unknown)".to_owned()),
+            project: Some("(unknown)".to_owned()),
+            ..session_on(date(2026, 10, 6), 20)
+        };
+        let sessions = [missing, named];
+        let models = model_rows(&sessions);
+        assert_eq!(models.len(), 2, "{models:?}");
+        assert!(models.iter().all(|row| row[1] == "1"), "{models:?}");
+        let projects = project_rows(&sessions);
+        assert_eq!(projects.len(), 2, "{projects:?}");
+        assert!(projects.iter().all(|row| row[1] == "1"), "{projects:?}");
+    }
+
+    #[test]
+    fn top_projects_keeps_the_busiest_ten() {
+        let mut sessions = Vec::new();
+        for project in 0..11 {
+            for _ in 0..(11 - project) {
+                sessions.push(Session {
+                    project: Some(format!("/work/p{project:02}")),
+                    ..session_on(date(2026, 10, 5), 1)
+                });
+            }
+        }
+        let rows = project_rows(&sessions);
+        assert_eq!(
+            rows.len(),
+            TOP_PROJECTS,
+            "only the ten busiest projects get a row"
+        );
+        assert_eq!(
+            rows[0][0], "/work/p00",
+            "the busiest project is listed first"
+        );
+        assert!(rows.iter().all(|row| row[0] != "/work/p10"), "{rows:?}");
     }
 
     #[test]
@@ -633,20 +791,24 @@ mod tests {
             ..session_on(date(2026, 10, 5), 10)
         };
         let mut out = Vec::new();
-        write_report(&mut out, &[priced], false).unwrap();
-        assert!(!String::from_utf8(out).unwrap().contains("Note:"));
+        write_report(&mut out, &[priced], Colors::Off).unwrap();
+        assert!(
+            !String::from_utf8(out).unwrap().contains("Note:"),
+            "no cost note when every session is priced"
+        );
     }
 
     #[test]
     fn weekly_table_ends_with_a_total_row() {
         let mut out = Vec::new();
-        write_report(&mut out, &two_weeks(), false).unwrap();
+        write_report(&mut out, &two_weeks(), Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         let cells = cells_of(&lines, "total");
         assert_eq!(
             cells,
-            ["total", "2", "2", "250", "0", "0", "250", "0.25", "-"]
+            ["total", "2", "2", "250", "0", "0", "250", "0.25", "-"],
+            "the total row sums the weekly columns"
         );
         let last_week = lines
             .iter()
@@ -656,18 +818,39 @@ mod tests {
             .iter()
             .position(|line| line.contains("total"))
             .unwrap();
-        assert_eq!(total, last_week + 1);
+        assert_eq!(
+            total,
+            last_week + 1,
+            "the total row comes right after the last week row"
+        );
     }
 
     #[test]
     fn shorten_keeps_the_start_and_end_of_long_names() {
-        assert_eq!(shorten("/tmp/app", 40), "/tmp/app");
+        assert_eq!(
+            shorten("/tmp/app", 40),
+            "/tmp/app",
+            "a name that fits the width is returned unchanged"
+        );
         let long = "/home/dom/orca/workspaces/zipper/replace-cli-parse-validate";
         let short = shorten(long, 40);
-        assert_eq!(short.chars().count(), 40);
-        assert!(short.starts_with("/home/dom/orc"));
-        assert!(short.ends_with("replace-cli-parse-validate"));
-        assert!(short.contains('…'));
+        assert_eq!(
+            short.chars().count(),
+            40,
+            "a long name is cut to exactly the requested width"
+        );
+        assert!(
+            short.starts_with("/home/dom/orc"),
+            "a cut name keeps the start of the path"
+        );
+        assert!(
+            short.ends_with("replace-cli-parse-validate"),
+            "a cut name keeps the end of the path"
+        );
+        assert!(
+            short.contains('…'),
+            "a cut name shows an ellipsis where text was removed"
+        );
     }
 
     #[test]
@@ -681,15 +864,28 @@ mod tests {
             "{short:?} is {} columns",
             short.width()
         );
-        assert!(short.starts_with("仕事"));
-        assert!(short.ends_with("場所テスト"));
-        assert!(short.contains('…'));
+        assert!(
+            short.starts_with("仕事"),
+            "a wide name keeps its start within the column limit"
+        );
+        assert!(
+            short.ends_with("場所テスト"),
+            "a wide name keeps its end within the column limit"
+        );
+        assert!(
+            short.contains('…'),
+            "a wide name that is cut shows an ellipsis"
+        );
     }
 
     #[test]
     fn shorten_to_zero_columns_is_empty() {
-        assert_eq!(shorten("abc", 0), "");
-        assert_eq!(shorten("", 0), "");
+        assert_eq!(shorten("abc", 0), "", "zero columns leave no text");
+        assert_eq!(
+            shorten("", 0),
+            "",
+            "an empty name stays empty at zero columns"
+        );
     }
 
     #[test]
@@ -716,7 +912,7 @@ mod tests {
             ..session_on(date(2026, 10, 5), 10)
         }];
         let mut out = Vec::new();
-        write_report(&mut out, &sessions, false).unwrap();
+        write_report(&mut out, &sessions, Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
         let table: Vec<&str> = text
             .lines()
@@ -738,27 +934,39 @@ mod tests {
             ..session_on(date(2026, 10, 5), 10)
         }];
         let mut out = Vec::new();
-        write_report(&mut out, &sessions, false).unwrap();
+        write_report(&mut out, &sessions, Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(!text.contains(long));
+        assert!(
+            !text.contains(long),
+            "a long project name is not printed in full"
+        );
         let table_lines = text
             .lines()
             .filter(|line| line.starts_with(['┌', '│', '╞', '└']));
-        assert!(table_lines.clone().count() > 0);
-        assert!(table_lines.clone().all(|line| line.chars().count() <= 100));
+        assert!(
+            table_lines.clone().count() > 0,
+            "the report prints at least one table line"
+        );
+        assert!(
+            table_lines.clone().all(|line| line.chars().count() <= 100),
+            "every table line fits within 100 characters"
+        );
     }
 
     #[test]
     fn plain_report_has_no_escape_codes() {
         let mut out = Vec::new();
-        write_report(&mut out, &two_weeks(), false).unwrap();
-        assert!(!String::from_utf8(out).unwrap().contains('\u{1b}'));
+        write_report(&mut out, &two_weeks(), Colors::Off).unwrap();
+        assert!(
+            !String::from_utf8(out).unwrap().contains('\u{1b}'),
+            "the plain report has no terminal escape codes"
+        );
     }
 
     #[test]
     fn colored_report_bolds_headings_and_stripes_odd_rows() {
         let mut out = Vec::new();
-        write_report(&mut out, &two_weeks(), true).unwrap();
+        write_report(&mut out, &two_weeks(), Colors::On).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\u{1b}[1m"), "headings and totals are bold");
         let lines: Vec<&str> = text.lines().collect();
@@ -787,16 +995,23 @@ mod tests {
     #[test]
     fn numbers_are_right_aligned_and_labels_left_aligned() {
         let mut out = Vec::new();
-        write_report(&mut out, &two_weeks(), false).unwrap();
+        write_report(&mut out, &two_weeks(), Colors::Off).unwrap();
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         let header = lines.iter().find(|line| line.contains("│ week")).unwrap();
-        assert!(raw_cells(header)[0].starts_with(" week "));
+        assert!(
+            raw_cells(header)[0].starts_with(" week "),
+            "the week header is left aligned with a leading space"
+        );
         let row = lines
             .iter()
             .find(|line| line.contains("2026-10-12"))
             .unwrap();
-        assert_eq!(raw_cells(row)[1], "        1 ");
+        assert_eq!(
+            raw_cells(row)[1],
+            "        1 ",
+            "a count cell is right aligned in its column"
+        );
     }
 
     proptest! {

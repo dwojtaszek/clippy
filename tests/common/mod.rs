@@ -1,7 +1,7 @@
 //! Scratch folders shared by the integration tests.
 
 // Setup helpers unwrap on purpose: a failed setup should fail the test loudly.
-#![allow(
+#![expect(
     clippy::unwrap_used,
     reason = "integration tests fail loudly on setup errors"
 )]

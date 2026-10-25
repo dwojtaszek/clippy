@@ -110,7 +110,9 @@ pub struct Snapshot {
 pub enum PageError {
     /// The page has no model rows.
     NoModels,
-    /// A promotion note is malformed, or it does not match one model row. Holds the note's line.
+    /// A model ID is listed in two rows. Holds the ID.
+    DuplicateModel(String),
+    /// A promotion note is malformed, or it does not match exactly one model row. Holds the note's line.
     Note(String),
 }
 
@@ -118,6 +120,7 @@ impl fmt::Display for PageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoModels => write!(f, "models page has no model rows"),
+            Self::DuplicateModel(id) => write!(f, "models page lists model {id} more than once"),
             Self::Note(line) => write!(f, "models page has an unreadable promotion note: {line}"),
         }
     }
@@ -137,15 +140,23 @@ struct Note {
 ///
 /// # Errors
 ///
-/// Returns an error when the page has no model rows, or when a promotion note is malformed or matches no row.
+/// Returns an error when the page has no model rows, when a model ID is listed twice, or when a promotion note is malformed or does not match exactly one row.
 pub fn parse_page(text: &str, fetched: DateTime<Utc>) -> Result<Snapshot, PageError> {
     let mut models = BTreeMap::new();
-    let mut ids_by_name = BTreeMap::new();
+    let mut ids_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut notes = Vec::new();
     for line in text.lines().map(str::trim) {
         if let Some((name, id, rate)) = model_row(line) {
-            let _ = ids_by_name.insert(name.to_owned(), id.to_owned());
-            let _ = models.insert(id.to_owned(), Multiplier { rate, promo: None });
+            ids_by_name
+                .entry(name.to_owned())
+                .or_default()
+                .push(id.to_owned());
+            if models
+                .insert(id.to_owned(), Multiplier { rate, promo: None })
+                .is_some()
+            {
+                return Err(PageError::DuplicateModel(id.to_owned()));
+            }
         } else if line.contains(" bills at ") {
             notes.push(note(line)?);
         }
@@ -155,7 +166,10 @@ pub fn parse_page(text: &str, fetched: DateTime<Utc>) -> Result<Snapshot, PageEr
     }
     for note in notes {
         let unmatched = || PageError::Note(note.line.clone());
-        let id = ids_by_name.get(&note.name).ok_or_else(unmatched)?;
+        // A note names a row only when exactly one row carries that name.
+        let [id] = ids_by_name.get(&note.name).map_or(&[][..], Vec::as_slice) else {
+            return Err(unmatched());
+        };
         let entry = models.get_mut(id).ok_or_else(unmatched)?;
         // Both rates come from page text, so the same value parses to the same number.
         if entry.rate.total_cmp(&note.rate).is_ne() {
@@ -380,7 +394,7 @@ mod tests {
     use std::fs;
 
     use chrono::{TimeZone, Utc};
-    use proptest::prelude::*;
+    use proptest::prelude::{prop, prop_assert, prop_assert_eq, proptest};
 
     use super::*;
     use crate::model::Tokens;
@@ -444,17 +458,29 @@ mod tests {
     #[test]
     fn page_rows_and_promotions_are_read() {
         let snapshot = page_snapshot(at(10, 12, 0));
-        assert_eq!(snapshot.models.len(), 3);
-        assert_eq!(snapshot.models["glm-5.2"].rate, 0.56);
+        assert_eq!(
+            snapshot.models.len(),
+            3,
+            "the models page yields exactly three model rows"
+        );
+        assert_eq!(
+            snapshot.models["glm-5.2"].rate, 0.56,
+            "glm-5.2 has the base rate listed on the page"
+        );
         let promo = snapshot.models["gpt-5.6-sol"].promo.unwrap();
         assert_eq!(
             promo.through,
-            NaiveDate::from_ymd_opt(2026, 11, 22).unwrap()
+            NaiveDate::from_ymd_opt(2026, 11, 22).unwrap(),
+            "the gpt-5.6-sol promotion ends on the last listed day"
         );
-        assert_eq!(promo.after, 2.0);
+        assert_eq!(
+            promo.after, 2.0,
+            "the promotion returns to the 2x rate after it ends"
+        );
         assert_eq!(
             snapshot.models["gpt-5.6-sol-fast"].promo.unwrap().after,
-            4.0
+            4.0,
+            "the fast variant keeps its own promotion return rate"
         );
     }
 
@@ -462,40 +488,95 @@ mod tests {
     fn promotion_ends_after_its_last_day() {
         let snapshot = page_snapshot(at(10, 12, 0));
         let book = MultiplierBook::new(vec![snapshot]);
-        assert_eq!(book.multiplier_at("gpt-5.6-sol", at(11, 22, 23)), Some(1.6));
-        assert_eq!(book.multiplier_at("gpt-5.6-sol", at(11, 23, 0)), Some(2.0));
-        assert_eq!(book.multiplier_at("glm-5.2", at(11, 23, 0)), Some(0.56));
-        assert_eq!(book.multiplier_at("unknown", at(11, 23, 0)), None);
+        assert_eq!(
+            book.multiplier_at("gpt-5.6-sol", at(11, 22, 23)),
+            Some(1.6),
+            "a promotion still applies during its final hour"
+        );
+        assert_eq!(
+            book.multiplier_at("gpt-5.6-sol", at(11, 23, 0)),
+            Some(2.0),
+            "the rate reverts once the promotion's last day has passed"
+        );
+        assert_eq!(
+            book.multiplier_at("glm-5.2", at(11, 23, 0)),
+            Some(0.56),
+            "a model with no promotion keeps its base rate"
+        );
+        assert_eq!(
+            book.multiplier_at("unknown", at(11, 23, 0)),
+            None,
+            "a model missing from the book has no multiplier"
+        );
     }
 
     #[test]
     fn page_errors_say_what_is_wrong() {
         assert_eq!(
             PageError::NoModels.to_string(),
-            "models page has no model rows"
+            "models page has no model rows",
+            "a page with no model rows gives a clear error message"
         );
         assert_eq!(
             PageError::Note("GPT note".to_owned()).to_string(),
-            "models page has an unreadable promotion note: GPT note"
+            "models page has an unreadable promotion note: GPT note",
+            "an unreadable promotion note error names the note text"
+        );
+        assert_eq!(
+            PageError::DuplicateModel("gpt-5.6-sol".to_owned()).to_string(),
+            "models page lists model gpt-5.6-sol more than once",
+            "a repeated model error names the model id that repeats"
         );
     }
 
     #[test]
     fn a_bad_promotion_note_fails_the_whole_page() {
         let wrong_rate = PAGE.replace("1.6× | `none`", "1.5× | `none`");
-        assert!(matches!(
-            parse_page(&wrong_rate, at(10, 12, 0)),
-            Err(PageError::Note(_))
-        ));
+        assert!(
+            matches!(
+                parse_page(&wrong_rate, at(10, 12, 0)),
+                Err(PageError::Note(_))
+            ),
+            "a promotion note with a wrong rate rejects the whole page"
+        );
         let no_row = PAGE.replace("GPT-5.6 Sol<sup>†</sup>", "Other");
-        assert!(matches!(
-            parse_page(&no_row, at(10, 12, 0)),
-            Err(PageError::Note(_))
-        ));
-        assert!(matches!(
-            parse_page("no table here", at(10, 12, 0)),
-            Err(PageError::NoModels)
-        ));
+        assert!(
+            matches!(parse_page(&no_row, at(10, 12, 0)), Err(PageError::Note(_))),
+            "a promotion note whose model row is missing rejects the page"
+        );
+        assert!(
+            matches!(
+                parse_page("no table here", at(10, 12, 0)),
+                Err(PageError::NoModels)
+            ),
+            "a page with no table at all reports no model rows"
+        );
+    }
+
+    #[test]
+    fn a_model_id_listed_twice_fails_the_page() {
+        let doubled = format!("{PAGE}\n| Other | `gpt-5.6-sol` | 3× | `none` |");
+        assert!(
+            matches!(
+                parse_page(&doubled, at(10, 12, 0)),
+                Err(PageError::DuplicateModel(id)) if id == "gpt-5.6-sol"
+            ),
+            "a model id listed twice fails the page naming that id"
+        );
+    }
+
+    #[test]
+    fn a_name_listed_twice_fails_only_when_a_note_names_it() {
+        let other = format!("{PAGE}\n| Other | `other-id` | 3× | `none` |");
+        assert!(
+            parse_page(&other, at(10, 12, 0)).is_ok(),
+            "a repeated model name alone does not fail the page"
+        );
+        let copied = format!("{PAGE}\n| GPT-5.6 Sol | `gpt-5.6-sol-copy` | 1.6× | `none` |");
+        assert!(
+            matches!(parse_page(&copied, at(10, 12, 0)), Err(PageError::Note(_))),
+            "a repeated model name fails the page when a note names it"
+        );
     }
 
     #[test]
@@ -524,8 +605,14 @@ mod tests {
     fn promotion_rate_matches_by_value_not_spelling() {
         let spelled = PAGE.replace("| 1.6× |", "| 1.60× |");
         let snapshot = parse_page(&spelled, at(10, 12, 0)).unwrap();
-        assert_eq!(snapshot.models["gpt-5.6-sol"].rate, 1.6);
-        assert!(snapshot.models["gpt-5.6-sol"].promo.is_some());
+        assert_eq!(
+            snapshot.models["gpt-5.6-sol"].rate, 1.6,
+            "a rate written with extra zeros still reads as the same value"
+        );
+        assert!(
+            snapshot.models["gpt-5.6-sol"].promo.is_some(),
+            "the promotion is still read when the rate is respelled"
+        );
     }
 
     #[test]
@@ -539,9 +626,18 @@ mod tests {
         ];
         price_droid_sessions(&mut sessions, &prices, &multipliers);
         // One million input tokens at $2e-6 each, times the multiplier in effect.
-        assert!((sessions[0].cost_usd.unwrap() - 2.0 * 1.6).abs() < 1e-9);
-        assert!((sessions[1].cost_usd.unwrap() - 2.0 * 3.2).abs() < 1e-9);
-        assert!((sessions[2].cost_usd.unwrap() - 2.0 * 2.0).abs() < 1e-9);
+        assert!(
+            (sessions[0].cost_usd.unwrap() - 2.0 * 1.6).abs() < 1e-9,
+            "the first session costs list price times the multiplier in effect"
+        );
+        assert!(
+            (sessions[1].cost_usd.unwrap() - 2.0 * 3.2).abs() < 1e-9,
+            "a fast-variant session is billed at its own multiplier"
+        );
+        assert!(
+            (sessions[2].cost_usd.unwrap() - 2.0 * 2.0).abs() < 1e-9,
+            "a session after the promotion ends is billed at the regular rate"
+        );
     }
 
     #[test]
@@ -555,7 +651,10 @@ mod tests {
             droid("gemini-4-argon", at(10, 2, 0)),
         ];
         price_droid_sessions(&mut sessions, &prices, &multipliers);
-        assert!(sessions.iter().all(|session| session.cost_usd.is_none()));
+        assert!(
+            sessions.iter().all(|session| session.cost_usd.is_none()),
+            "no session is priced without a first-party list price and multiplier"
+        );
     }
 
     #[test]
@@ -565,15 +664,34 @@ mod tests {
         let mut session = droid("gpt-5.6-sol", at(10, 2, 0));
         session.source = Source::Agy;
         price_droid_sessions(std::slice::from_mut(&mut session), &prices, &multipliers);
-        assert_eq!(session.cost_usd, None);
+        assert_eq!(
+            session.cost_usd, None,
+            "a session from another source keeps no cost"
+        );
     }
 
     #[test]
     fn list_keys_strip_fast_suffixes_only() {
-        assert_eq!(list_key("gpt-6.1-sol-ultrafast"), Some("gpt-6.1-sol"));
-        assert_eq!(list_key("glm-5.2-fast"), Some("zai/glm-5.2"));
-        assert_eq!(list_key("glm-5.3-flash"), Some("zai/glm-5.3-flash"));
-        assert_eq!(list_key("deepseek-v4.1-flash"), None);
+        assert_eq!(
+            list_key("gpt-6.1-sol-ultrafast"),
+            Some("gpt-6.1-sol"),
+            "an ultrafast suffix is stripped to the base list key"
+        );
+        assert_eq!(
+            list_key("glm-5.2-fast"),
+            Some("zai/glm-5.2"),
+            "a fast suffix on glm maps to the zai-prefixed list key"
+        );
+        assert_eq!(
+            list_key("glm-5.3-flash"),
+            Some("zai/glm-5.3-flash"),
+            "a flash model keeps its own name as its list key"
+        );
+        assert_eq!(
+            list_key("deepseek-v4.1-flash"),
+            None,
+            "an unknown model has no list key"
+        );
     }
 
     /// The models page as the live source served it on 2026-10-25, unchanged.
@@ -590,7 +708,11 @@ mod tests {
         for (id, key) in LIST_KEYS {
             // `list_key` returns the first match, so a repeated ID would hide its second entry.
             assert!(ids.insert(*id), "{id} is listed twice");
-            assert_eq!(list_key(id), Some(*key));
+            assert_eq!(
+                list_key(id),
+                Some(*key),
+                "{id} maps to its expected list key"
+            );
             assert!(
                 page.models.contains_key(*id),
                 "{id} is not on the models page"
@@ -606,21 +728,32 @@ mod tests {
     fn recorded_models_page_keeps_rates_and_promotions() {
         let snapshot = parse_page(RECORDED_PAGE, at(10, 25, 4)).unwrap();
         let sol = snapshot.models["gpt-5.6-sol"];
-        assert_eq!(sol.rate, 1.6);
+        assert_eq!(
+            sol.rate, 1.6,
+            "gpt-5.6-sol keeps its base rate from the recorded page"
+        );
         assert_eq!(
             sol.promo,
             Some(Promo {
                 through: NaiveDate::from_ymd_opt(2026, 11, 22).unwrap(),
                 after: 2.0,
-            })
+            }),
+            "the recorded promotion keeps its end date and return rate"
         );
         let flash = snapshot.models["gemini-3.8-flash"];
-        assert_eq!(flash.rate, 0.3);
+        assert_eq!(
+            flash.rate, 0.3,
+            "the gemini flash model keeps its recorded base rate"
+        );
         assert_eq!(
             flash.promo.map(|promo| promo.through),
-            NaiveDate::from_ymd_opt(2027, 1, 1)
+            NaiveDate::from_ymd_opt(2027, 1, 1),
+            "the gemini flash promotion ends on the recorded date"
         );
-        assert_eq!(snapshot.models["glm-5.2"].promo, None);
+        assert_eq!(
+            snapshot.models["glm-5.2"].promo, None,
+            "a model with no promotion on the page has none"
+        );
     }
 
     #[test]
@@ -657,8 +790,16 @@ mod tests {
         let during = parse_timestamp("2026-11-22T00:30:00-05:00").unwrap();
         // 20:00 on Nov 22 at UTC-5 is 01:00 UTC on Nov 23, so the promotion has ended.
         let after = parse_timestamp("2026-11-22T20:00:00-05:00").unwrap();
-        assert_eq!(book.multiplier_at("gpt-5.6-sol", during), Some(1.6));
-        assert_eq!(book.multiplier_at("gpt-5.6-sol", after), Some(2.0));
+        assert_eq!(
+            book.multiplier_at("gpt-5.6-sol", during),
+            Some(1.6),
+            "a time still on the last UTC day gets the promotion rate"
+        );
+        assert_eq!(
+            book.multiplier_at("gpt-5.6-sol", after),
+            Some(2.0),
+            "a time on the next UTC day gets the regular return rate"
+        );
     }
 
     #[test]
@@ -670,32 +811,63 @@ mod tests {
 
         let at_instant = parse_timestamp("2026-10-11T19:00:00-05:00").unwrap();
         let just_before = parse_timestamp("2026-10-11T18:59:59-05:00").unwrap();
-        assert_eq!(book.multiplier_at("glm-5.2", at_instant), Some(0.6));
-        assert_eq!(book.multiplier_at("glm-5.2", just_before), Some(0.56));
+        assert_eq!(
+            book.multiplier_at("glm-5.2", at_instant),
+            Some(0.6),
+            "the new rate applies from the exact instant it takes effect"
+        );
+        assert_eq!(
+            book.multiplier_at("glm-5.2", just_before),
+            Some(0.56),
+            "the old rate still applies one second before the change"
+        );
     }
 
     #[test]
     fn snapshots_are_saved_only_when_a_multiplier_changes() {
         let dir = ScratchDir::new("multipliers-save");
         let first = page_snapshot(at(10, 12, 0));
-        assert_eq!(save(&dir, &first).unwrap(), Refresh::Updated);
+        assert_eq!(
+            save(&dir, &first).unwrap(),
+            Refresh::Updated,
+            "the first snapshot is saved as a new update"
+        );
         assert_eq!(
             save(&dir, &page_snapshot(at(10, 13, 0))).unwrap(),
-            Refresh::Unchanged
+            Refresh::Unchanged,
+            "a snapshot with the same multipliers is not saved again"
         );
 
         let changed = PAGE.replace("0.56×", "0.6×");
         let second = parse_page(&changed, at(10, 14, 0)).unwrap();
-        assert_eq!(save(&dir, &second).unwrap(), Refresh::Updated);
+        assert_eq!(
+            save(&dir, &second).unwrap(),
+            Refresh::Updated,
+            "a changed multiplier is saved as a new update"
+        );
         let book = load(&dir).unwrap();
-        assert!(!book.is_empty());
-        assert_eq!(book.multiplier_at("glm-5.2", at(10, 13, 0)), Some(0.56));
-        assert_eq!(book.multiplier_at("glm-5.2", at(10, 15, 0)), Some(0.6));
+        assert!(
+            !book.is_empty(),
+            "a book loaded from saved snapshots is not empty"
+        );
+        assert_eq!(
+            book.multiplier_at("glm-5.2", at(10, 13, 0)),
+            Some(0.56),
+            "the earlier saved rate still applies before the change"
+        );
+        assert_eq!(
+            book.multiplier_at("glm-5.2", at(10, 15, 0)),
+            Some(0.6),
+            "the changed rate applies after the change time"
+        );
     }
 
     #[test]
     fn an_empty_book_is_empty() {
-        assert!(MultiplierBook::default().is_empty());
+        assert!(
+            MultiplierBook::default().is_empty(),
+            "a new book with no snapshots is empty"
+        );
     }
 
     #[test]
@@ -706,10 +878,15 @@ mod tests {
         fs::write(dir.join("wrong-shape.json"), r#"{"fetched": "x"}"#).unwrap();
 
         let loaded = read(&dir).unwrap();
-        assert_eq!(loaded.skipped, ["broken.json", "wrong-shape.json"]);
+        assert_eq!(
+            loaded.skipped,
+            ["broken.json", "wrong-shape.json"],
+            "unreadable snapshot files are reported by file name"
+        );
         assert_eq!(
             loaded.book.multiplier_at("glm-5.2", at(10, 13, 0)),
-            Some(0.56)
+            Some(0.56),
+            "the readable snapshot still loads after bad ones are skipped"
         );
     }
 
@@ -717,11 +894,24 @@ mod tests {
     fn rows_need_a_positive_finite_multiplier() {
         assert_eq!(
             model_row("| X | `x` | 0.5× | `none` |"),
-            Some(("X", "x", 0.5))
+            Some(("X", "x", 0.5)),
+            "a row with a positive finite multiplier is read"
         );
-        assert_eq!(model_row("| X | `x` | 0× | `none` |"), None);
-        assert_eq!(model_row("| X | `x` | inf× | `none` |"), None);
-        assert_eq!(model_row("| X | `x` | NaN× | `none` |"), None);
+        assert_eq!(
+            model_row("| X | `x` | 0× | `none` |"),
+            None,
+            "a row with a zero multiplier is rejected"
+        );
+        assert_eq!(
+            model_row("| X | `x` | inf× | `none` |"),
+            None,
+            "a row with an infinite multiplier is rejected"
+        );
+        assert_eq!(
+            model_row("| X | `x` | NaN× | `none` |"),
+            None,
+            "a row with a NaN multiplier is rejected"
+        );
     }
 
     #[test]
@@ -729,19 +919,35 @@ mod tests {
         let good = page_snapshot(at(10, 12, 0)).to_json();
         let mut zero = good.clone();
         zero["models"]["glm-5.2"]["rate"] = json!(0.0);
-        assert_eq!(Snapshot::from_json(&zero), None);
+        assert_eq!(
+            Snapshot::from_json(&zero),
+            None,
+            "a saved snapshot with a zero multiplier is not read"
+        );
         let mut promo = good.clone();
         promo["models"]["gpt-5.6-sol"]["promo"]["after"] = json!(-2.0);
-        assert_eq!(Snapshot::from_json(&promo), None);
+        assert_eq!(
+            Snapshot::from_json(&promo),
+            None,
+            "a saved snapshot with a negative promotion rate is not read"
+        );
         let mut empty = good;
         empty["models"] = json!({});
-        assert_eq!(Snapshot::from_json(&empty), None);
+        assert_eq!(
+            Snapshot::from_json(&empty),
+            None,
+            "a saved snapshot with no models is not read"
+        );
     }
 
     #[test]
     fn snapshots_round_trip_through_json() {
         let original = page_snapshot(at(10, 12, 0));
-        assert_eq!(Snapshot::from_json(&original.to_json()).unwrap(), original);
+        assert_eq!(
+            Snapshot::from_json(&original.to_json()).unwrap(),
+            original,
+            "a snapshot survives a JSON round trip unchanged"
+        );
     }
 
     proptest! {

@@ -9,13 +9,44 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::download::Downloads;
 use crate::model::{self, Session};
 use crate::{agy, droid, multipliers, opencode, prices, refresh, report};
 
+/// Whether prices are refreshed before the report. `--offline` selects `Offline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Refresh the saved prices when they are older than a day.
+    Online,
+    /// Use the saved snapshots only.
+    Offline,
+}
+
+/// Whether standard output is a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stdout {
+    /// A terminal, where colors show.
+    Terminal,
+    /// A file or a pipe.
+    Redirected,
+}
+
+/// Whether the `NO_COLOR` variable is set. See <https://no-color.org>.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoColor {
+    /// `NO_COLOR` is set.
+    Set,
+    /// `NO_COLOR` is not set.
+    Unset,
+}
+
 /// Colors only for a terminal, and never when `NO_COLOR` is set.
 #[must_use]
-pub const fn use_color(terminal: bool, no_color_set: bool) -> bool {
-    terminal && !no_color_set
+pub const fn use_color(stdout: Stdout, no_color: NoColor) -> report::Colors {
+    match (stdout, no_color) {
+        (Stdout::Terminal, NoColor::Unset) => report::Colors::On,
+        (Stdout::Terminal, NoColor::Set) | (Stdout::Redirected, _) => report::Colors::Off,
+    }
 }
 
 /// Runs the report. The report goes to `out`. Warnings go to `err`.
@@ -25,10 +56,10 @@ pub const fn use_color(terminal: bool, no_color_set: bool) -> bool {
 /// Returns an error when a saved snapshot cannot be read or the report cannot be written. An unreadable source is only a warning.
 pub fn run(
     home: &Path,
-    offline: bool,
+    mode: Mode,
     now: DateTime<Utc>,
-    color: bool,
-    download: impl FnOnce() -> Result<(String, String), String>,
+    colors: report::Colors,
+    download: impl FnOnce() -> Result<Downloads, Box<dyn Error>>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<(), Box<dyn Error>> {
@@ -58,10 +89,9 @@ pub fn run(
         warn(err, warning);
     }
 
-    let refresh_warning = if offline {
-        None
-    } else {
-        refresh::refresh_prices(&prices_dir, &multipliers_dir, now, download)
+    let refresh_warning = match mode {
+        Mode::Offline => None,
+        Mode::Online => refresh::refresh_prices(&prices_dir, &multipliers_dir, now, download),
     };
     if let Some(warning) = refresh_warning {
         warn(err, warning);
@@ -96,7 +126,7 @@ pub fn run(
     multipliers::price_droid_sessions(&mut sessions, &book, &multiplier_book);
 
     // Exit quietly when the output is piped into something that stops reading, like `head`.
-    match report::write_report(out, &sessions, color) {
+    match report::write_report(out, &sessions, colors) {
         Err(error) if error.kind() != ErrorKind::BrokenPipe => Err(error.into()),
         _ => Ok(()),
     }
@@ -113,6 +143,7 @@ mod tests {
 
     use super::*;
     use crate::refresh::apply;
+    use crate::report::Colors;
     use crate::testing::{SAMPLE_PAGE, SAMPLE_TABLE, ScratchDir, no_download};
 
     fn at() -> DateTime<Utc> {
@@ -135,16 +166,37 @@ mod tests {
 
     #[test]
     fn color_needs_a_terminal_and_no_no_color() {
-        assert!(use_color(true, false));
-        assert!(!use_color(true, true));
-        assert!(!use_color(false, false));
+        assert_eq!(
+            use_color(Stdout::Terminal, NoColor::Unset),
+            Colors::On,
+            "colors are on only for a terminal when NO_COLOR is not set"
+        );
+        assert_eq!(
+            use_color(Stdout::Terminal, NoColor::Set),
+            Colors::Off,
+            "setting NO_COLOR turns colors off even on a terminal"
+        );
+        assert_eq!(
+            use_color(Stdout::Redirected, NoColor::Unset),
+            Colors::Off,
+            "colors stay off when stdout is redirected rather than a terminal"
+        );
     }
 
     #[test]
     fn offline_run_with_nothing_saved_warns_and_still_reports() {
         let home = ScratchDir::new("app-empty");
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        run(&home, true, at(), false, no_download, &mut out, &mut err).unwrap();
+        run(
+            &home,
+            Mode::Offline,
+            at(),
+            Colors::Off,
+            no_download,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
 
         let out = String::from_utf8(out).unwrap();
         let err = String::from_utf8(err).unwrap();
@@ -160,7 +212,16 @@ mod tests {
         fs::create_dir_all(&prices_dir).unwrap();
         fs::write(prices_dir.join("20261001T000000Z.json"), "{truncated").unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        run(&home, true, at(), false, no_download, &mut out, &mut err).unwrap();
+        run(
+            &home,
+            Mode::Offline,
+            at(),
+            Colors::Off,
+            no_download,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
 
         let err = String::from_utf8(err).unwrap();
         assert!(
@@ -173,8 +234,17 @@ mod tests {
     fn a_failed_download_warns_and_the_report_still_runs() {
         let home = ScratchDir::new("app-failed");
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let download = || Err("connection refused".to_owned());
-        run(&home, false, at(), false, download, &mut out, &mut err).unwrap();
+        let download = || Err("connection refused".into());
+        run(
+            &home,
+            Mode::Online,
+            at(),
+            Colors::Off,
+            download,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
 
         let err = String::from_utf8(err).unwrap();
         assert!(
@@ -188,22 +258,57 @@ mod tests {
     #[test]
     fn a_successful_download_is_saved_before_the_prices_are_read() {
         let home = ScratchDir::new("app-downloaded");
-        let download = || Ok((SAMPLE_TABLE.to_owned(), SAMPLE_PAGE.to_owned()));
+        let download = || {
+            Ok(Downloads {
+                table: SAMPLE_TABLE.to_owned(),
+                page: SAMPLE_PAGE.to_owned(),
+            })
+        };
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        run(&home, false, at(), false, download, &mut out, &mut err).unwrap();
+        run(
+            &home,
+            Mode::Online,
+            at(),
+            Colors::Off,
+            download,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
 
         let err = String::from_utf8(err).unwrap();
         assert!(!err.contains("no price snapshot saved"), "{err}");
         assert!(!err.contains("no multiplier snapshot saved"), "{err}");
-        assert!(home.join(".local/share/droid-usage/prices").is_dir());
+        assert!(
+            home.join(".local/share/droid-usage/prices").is_dir(),
+            "a successful download creates the prices directory before prices are read"
+        );
     }
 
     #[test]
     fn color_reaches_the_report() {
         let home = ScratchDir::new("app-color");
         let (mut colored, mut plain, mut err) = (Vec::new(), Vec::new(), Vec::new());
-        run(&home, true, at(), true, no_download, &mut colored, &mut err).unwrap();
-        run(&home, true, at(), false, no_download, &mut plain, &mut err).unwrap();
+        run(
+            &home,
+            Mode::Offline,
+            at(),
+            Colors::On,
+            no_download,
+            &mut colored,
+            &mut err,
+        )
+        .unwrap();
+        run(
+            &home,
+            Mode::Offline,
+            at(),
+            Colors::Off,
+            no_download,
+            &mut plain,
+            &mut err,
+        )
+        .unwrap();
 
         assert!(
             colored.contains(&0x1b),
@@ -217,7 +322,19 @@ mod tests {
         let home = ScratchDir::new("app-pipe");
         let mut out = Failing(ErrorKind::BrokenPipe);
         let mut err = Vec::new();
-        assert!(run(&home, true, at(), false, no_download, &mut out, &mut err).is_ok());
+        assert!(
+            run(
+                &home,
+                Mode::Offline,
+                at(),
+                Colors::Off,
+                no_download,
+                &mut out,
+                &mut err
+            )
+            .is_ok(),
+            "a broken pipe on stdout is ignored and the run succeeds"
+        );
     }
 
     #[test]
@@ -225,7 +342,19 @@ mod tests {
         let home = ScratchDir::new("app-write-fail");
         let mut out = Failing(ErrorKind::PermissionDenied);
         let mut err = Vec::new();
-        assert!(run(&home, true, at(), false, no_download, &mut out, &mut err).is_err());
+        assert!(
+            run(
+                &home,
+                Mode::Offline,
+                at(),
+                Colors::Off,
+                no_download,
+                &mut out,
+                &mut err
+            )
+            .is_err(),
+            "a write failure other than a broken pipe is returned as an error"
+        );
     }
 
     #[test]
@@ -244,8 +373,21 @@ mod tests {
 
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let later = at() + chrono::TimeDelta::days(3);
-        run(&home, true, later, false, no_download, &mut out, &mut err).unwrap();
+        run(
+            &home,
+            Mode::Offline,
+            later,
+            Colors::Off,
+            no_download,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
 
-        assert_eq!(prices::last_checked(&prices_dir), Some(at()));
+        assert_eq!(
+            prices::last_checked(&prices_dir),
+            Some(at()),
+            "an offline run does not change the recorded price check time"
+        );
     }
 }

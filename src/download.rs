@@ -2,6 +2,15 @@
 
 use std::time::Duration;
 
+/// The two texts the price refresh needs, as downloaded.
+#[derive(Debug)]
+pub struct Downloads {
+    /// The price table, as JSON.
+    pub table: String,
+    /// The Droid models page, as Markdown.
+    pub page: String,
+}
+
 /// Fetches the price table at `table_url`, then the models page at `page_url`. Each request may take at most `timeout`.
 ///
 /// # Errors
@@ -11,14 +20,14 @@ pub fn fetch_both(
     table_url: &str,
     page_url: &str,
     timeout: Duration,
-) -> Result<(String, String), ureq::Error> {
+) -> Result<Downloads, ureq::Error> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .build();
     let agent = ureq::Agent::new_with_config(config);
     let table = fetch(&agent, table_url)?;
     let page = fetch(&agent, page_url)?;
-    Ok((table, page))
+    Ok(Downloads { table, page })
 }
 
 fn fetch(agent: &ureq::Agent, url: &str) -> Result<String, ureq::Error> {
@@ -29,6 +38,7 @@ fn fetch(agent: &ureq::Agent, url: &str) -> Result<String, ureq::Error> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
 
@@ -73,14 +83,20 @@ mod tests {
                 response("200 OK", "| GPT-X | `gpt-x` | 1× | `none` |"),
             ),
         ]);
-        let (table, page) = fetch_both(
+        let downloads = fetch_both(
             &format!("{base}/table"),
             &format!("{base}/page"),
             LONG_TIMEOUT,
         )
         .unwrap();
-        assert_eq!(table, r#"{"gpt-x": {}}"#);
-        assert_eq!(page, "| GPT-X | `gpt-x` | 1× | `none` |");
+        assert_eq!(
+            downloads.table, r#"{"gpt-x": {}}"#,
+            "the table response body is returned unchanged as the table"
+        );
+        assert_eq!(
+            downloads.page, "| GPT-X | `gpt-x` | 1× | `none` |",
+            "the page response body is returned unchanged as the page"
+        );
     }
 
     #[test]
@@ -135,19 +151,23 @@ mod tests {
             .unwrap()
             .port();
         let url = format!("http://127.0.0.1:{port}/table");
-        assert!(fetch_both(&url, &url, LONG_TIMEOUT).is_err());
+        assert!(
+            fetch_both(&url, &url, LONG_TIMEOUT).is_err(),
+            "a refused connection to the table url is returned as an error"
+        );
     }
 
     #[test]
     fn a_silent_server_hits_the_timeout() {
-        // Accepts the connection, reads the request, and never answers.
+        // Accepts one connection, reads the request, and never answers until the test is done with it.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let _ = thread::spawn(move || {
-            for mut stream in listener.incoming().flatten() {
+        let (done, until_done) = mpsc::channel::<()>();
+        let silent = thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
                 let mut buf = [0_u8; 4096];
                 let _ = stream.read(&mut buf);
-                thread::sleep(Duration::from_secs(30));
+                let _ = until_done.recv();
             }
         });
         let started = Instant::now();
@@ -156,11 +176,17 @@ mod tests {
             &format!("{base}/page"),
             Duration::from_millis(300),
         );
-        assert!(result.is_err());
+        let elapsed = started.elapsed();
+        // Assert before joining: if fetch never connected, the server thread waits in accept and join would hang.
         assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "gave up after {:?}",
-            started.elapsed()
+            result.is_err(),
+            "a server that never answers makes the fetch fail rather than hang"
         );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "gave up after {elapsed:?}"
+        );
+        drop(done);
+        silent.join().unwrap();
     }
 }

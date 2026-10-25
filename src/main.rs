@@ -13,21 +13,30 @@ use droid_usage::{app, cli, download, multipliers, prices};
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let offline = cli::parse_args(env::args().skip(1))?;
+    let mode = cli::parse_args(env::args().skip(1))?;
     let home = PathBuf::from(env::var("HOME")?);
-    let color = app::use_color(console::colors_enabled(), env::var_os("NO_COLOR").is_some());
+    let stdout = if console::colors_enabled() {
+        app::Stdout::Terminal
+    } else {
+        app::Stdout::Redirected
+    };
+    let no_color = if env::var_os("NO_COLOR").is_some() {
+        app::NoColor::Set
+    } else {
+        app::NoColor::Unset
+    };
     app::run(
         &home,
-        offline,
+        mode,
         Utc::now(),
-        color,
+        app::use_color(stdout, no_color),
         || {
             download::fetch_both(
                 prices::SOURCE_URL,
                 multipliers::SOURCE_URL,
                 DOWNLOAD_TIMEOUT,
             )
-            .map_err(|err| err.to_string())
+            .map_err(Into::into)
         },
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),

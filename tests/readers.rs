@@ -1,9 +1,8 @@
 //! Reader tests against real folders and databases, through the public API.
 
 // Setup helpers unwrap on purpose: a failed setup should fail the test loudly.
-#![allow(
+#![expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "integration tests fail loudly on setup errors"
 )]
 
@@ -44,17 +43,39 @@ fn droid_reads_sessions_and_skips_settings_without_a_transcript() {
 
     let read = droid::read_sessions(&root).unwrap();
 
-    assert_eq!(read.sessions.len(), 1);
-    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        read.sessions.len(),
+        1,
+        "only the session that has a transcript is kept as a session"
+    );
+    assert_eq!(
+        read.skipped, 1,
+        "the settings file without a transcript is counted as skipped"
+    );
     let session = &read.sessions[0];
-    assert_eq!(session.project.as_deref(), Some("/work/app"));
-    assert_eq!(session.model.as_deref(), Some("glm-5.3"));
-    assert_eq!(session.tokens.total(), 18);
+    assert_eq!(
+        session.project.as_deref(),
+        Some("/work/app"),
+        "the project comes from the session_start cwd in the transcript"
+    );
+    assert_eq!(
+        session.model.as_deref(),
+        Some("glm-5.3"),
+        "the model comes from the settings file of the session"
+    );
+    assert_eq!(
+        session.tokens.total(),
+        18,
+        "the total sums input output and both cache token counts"
+    );
 }
 
 #[test]
 fn droid_missing_root_is_an_error() {
-    assert!(droid::read_sessions(Path::new("/nonexistent-droid-usage-root")).is_err());
+    assert!(
+        droid::read_sessions(Path::new("/nonexistent-droid-usage-root")).is_err(),
+        "a missing droid root folder is reported as an error"
+    );
 }
 
 #[test]
@@ -77,7 +98,8 @@ fn agy_reads_transcripts_with_models_from_their_databases() {
             params![0, b"\x01gemini-3.7-flash-tiered".as_slice()],
         )
         .unwrap(),
-        1
+        1,
+        "the model metadata row is inserted into the conversation database"
     );
     drop(conn);
 
@@ -98,21 +120,40 @@ fn agy_reads_transcripts_with_models_from_their_databases() {
 
     let read = agy::read_sessions(&root).unwrap();
 
-    assert_eq!(read.sessions.len(), 2);
-    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        read.sessions.len(),
+        2,
+        "both conversations that have a transcript are kept as sessions"
+    );
+    assert_eq!(
+        read.skipped, 1,
+        "the transcript without timestamps is counted as skipped"
+    );
     let with_model = read
         .sessions
         .iter()
         .find(|s| s.model.is_some())
         .expect("conv-1 has a model");
-    assert_eq!(with_model.model.as_deref(), Some("gemini-3.7-flash-tiered"));
-    assert_eq!(with_model.tokens.total(), 12);
+    assert_eq!(
+        with_model.model.as_deref(),
+        Some("gemini-3.7-flash-tiered"),
+        "the model name is read from the conversation metadata database"
+    );
+    assert_eq!(
+        with_model.tokens.total(),
+        12,
+        "the conversation total sums input output and cache read tokens"
+    );
     let without_model = read
         .sessions
         .iter()
         .find(|s| s.model.is_none())
         .expect("conv-2 has no model");
-    assert_eq!(without_model.tokens.total(), 2);
+    assert_eq!(
+        without_model.tokens.total(),
+        2,
+        "a conversation without a database still totals its transcript tokens"
+    );
 }
 
 #[cfg(unix)]
@@ -126,8 +167,15 @@ fn agy_transcript_that_cannot_be_opened_is_skipped_not_missing() {
 
     let read = agy::read_sessions(&root).unwrap();
 
-    assert_eq!(read.sessions, Vec::new());
-    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        read.sessions,
+        Vec::new(),
+        "an unopenable transcript produces no session"
+    );
+    assert_eq!(
+        read.skipped, 1,
+        "an unopenable transcript is counted as skipped not as missing"
+    );
 }
 
 #[test]
@@ -152,16 +200,34 @@ fn opencode_reads_a_database_file() {
 
     let read = opencode::read_sessions(&db).unwrap();
 
-    assert_eq!(read.sessions.len(), 1);
-    assert_eq!(read.sessions[0].model.as_deref(), Some("deepseek-v4"));
-    assert_eq!(read.sessions[0].tokens.total(), 18);
+    assert_eq!(
+        read.sessions.len(),
+        1,
+        "the opencode database yields exactly one session"
+    );
+    assert_eq!(
+        read.sessions[0].model.as_deref(),
+        Some("deepseek-v4"),
+        "the model id is taken from the model json field of the row"
+    );
+    assert_eq!(
+        read.sessions[0].tokens.total(),
+        18,
+        "the total sums input output and cache read tokens of the row"
+    );
 }
 
 #[test]
 fn opencode_missing_database_is_an_error_and_is_not_created() {
     let missing = Path::new("/nonexistent-droid-usage/opencode.db");
-    assert!(opencode::read_sessions(missing).is_err());
-    assert!(!missing.exists());
+    assert!(
+        opencode::read_sessions(missing).is_err(),
+        "a missing opencode database is reported as an error"
+    );
+    assert!(
+        !missing.exists(),
+        "reading a missing opencode database does not create the file"
+    );
 }
 
 /// A one-model price table with the given input price per token.

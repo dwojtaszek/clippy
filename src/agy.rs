@@ -109,7 +109,7 @@ pub fn first_model_name(blob: &[u8]) -> Option<String> {
 mod tests {
     use std::io::Cursor;
 
-    use proptest::prelude::*;
+    use proptest::prelude::{any, prop, prop_assert, proptest};
 
     use super::*;
 
@@ -125,7 +125,11 @@ mod tests {
             "\n",
         );
         let (started, tokens) = parse_transcript(Cursor::new(text)).unwrap();
-        assert_eq!(started.to_rfc3339(), "2026-10-05T15:04:35+00:00");
+        assert_eq!(
+            started.to_rfc3339(),
+            "2026-10-05T15:04:35+00:00",
+            "the start time is the earliest transcript timestamp"
+        );
         assert_eq!(
             tokens,
             Tokens {
@@ -133,7 +137,8 @@ mod tests {
                 output: 5,
                 cache_read: 1,
                 cache_write: 0
-            }
+            },
+            "usage is summed over all transcript lines"
         );
     }
 
@@ -147,12 +152,19 @@ mod tests {
             "\n",
         );
         let (started, _) = parse_transcript(Cursor::new(text)).unwrap();
-        assert_eq!(started.to_rfc3339(), "2026-10-05T08:00:00+00:00");
+        assert_eq!(
+            started.to_rfc3339(),
+            "2026-10-05T08:00:00+00:00",
+            "the earliest time is picked by instant not by text"
+        );
     }
 
     #[test]
     fn transcript_without_timestamps_is_none() {
-        assert!(parse_transcript(Cursor::new(r#"{"input_tokens":5}"#)).is_none());
+        assert!(
+            parse_transcript(Cursor::new(r#"{"input_tokens":5}"#)).is_none(),
+            "a transcript without timestamps gives no result"
+        );
     }
 
     #[test]
@@ -160,9 +172,14 @@ mod tests {
         let blob = b"\x01\x17gemini-3.7-flash-tiered\x0bused_claude\x00";
         assert_eq!(
             first_model_name(blob).as_deref(),
-            Some("gemini-3.7-flash-tiered")
+            Some("gemini-3.7-flash-tiered"),
+            "the model name is found from its prefix in the blob"
         );
-        assert_eq!(first_model_name(b"used_claude_conservative only"), None);
+        assert_eq!(
+            first_model_name(b"used_claude_conservative only"),
+            None,
+            "no model name is returned without the prefix"
+        );
     }
 
     #[test]
@@ -176,7 +193,8 @@ mod tests {
                 rusqlite::params![1, b"gpt-6-sol".as_slice()],
             )
             .unwrap(),
-            1
+            1,
+            "the metadata insert changes exactly one row"
         );
         assert_eq!(
             conn.execute(
@@ -184,11 +202,13 @@ mod tests {
                 rusqlite::params![0, b"claude-fable-5".as_slice()],
             )
             .unwrap(),
-            1
+            1,
+            "the second metadata insert changes exactly one row"
         );
         assert_eq!(
             model_from_conn(&conn).unwrap().as_deref(),
-            Some("claude-fable-5")
+            Some("claude-fable-5"),
+            "the model comes from the row with the lowest index"
         );
     }
 

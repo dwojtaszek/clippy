@@ -1,5 +1,6 @@
 //! Types shared by the readers, the prices, and the report.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -89,8 +90,13 @@ pub struct Read {
 /// Returns an error when `root` or a directory under it cannot be read.
 pub fn files_with_suffix(root: &Path, suffix: &str) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
+        // A folder reached through a symlink, or a link back up the tree, is read once.
+        if !seen.insert(std::fs::canonicalize(&dir)?) {
+            continue;
+        }
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
             if path.is_dir() {
@@ -147,7 +153,11 @@ mod tests {
             cache_read: 3,
             cache_write: 4,
         };
-        assert_eq!(tokens.total(), 10);
+        assert_eq!(
+            tokens.total(),
+            10,
+            "the token total sums all four token kinds"
+        );
         tokens.add(&Tokens {
             input: 10,
             output: 20,
@@ -161,7 +171,8 @@ mod tests {
                 output: 22,
                 cache_read: 33,
                 cache_write: 44
-            }
+            },
+            "adding token counts sums each kind separately"
         );
     }
 
@@ -185,9 +196,14 @@ mod tests {
         };
         assert_eq!(
             add_source::<io::Error>("agy", Ok(clean), &mut sessions),
-            None
+            None,
+            "a readable source with no skips adds no warning"
         );
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions.len(),
+            1,
+            "the readable source session is added to the list"
+        );
 
         let skipped = Read {
             sessions: vec![one_session()],
@@ -195,9 +211,14 @@ mod tests {
         };
         assert_eq!(
             add_source::<io::Error>("agy", Ok(skipped), &mut sessions),
-            Some("agy: skipped 2 unreadable entries".to_owned())
+            Some("agy: skipped 2 unreadable entries".to_owned()),
+            "skipped entries produce a warning naming the source and count"
         );
-        assert_eq!(sessions.len(), 2);
+        assert_eq!(
+            sessions.len(),
+            2,
+            "sessions from both reads accumulate in the list"
+        );
     }
 
     #[test]
@@ -206,18 +227,27 @@ mod tests {
         let err = io::Error::other("no such folder");
         assert_eq!(
             add_source("droid", Err(err), &mut sessions),
-            Some("droid: no such folder".to_owned())
+            Some("droid: no such folder".to_owned()),
+            "an unreadable source reports its error under its own name"
         );
-        assert_eq!(sessions, Vec::<Session>::new());
+        assert_eq!(
+            sessions,
+            Vec::<Session>::new(),
+            "an unreadable source adds no sessions"
+        );
     }
 
     #[test]
     fn timestamps_accept_offsets_and_reject_text() {
         assert_eq!(
             parse_timestamp("2026-10-05T17:04:35+02:00"),
-            parse_timestamp("2026-10-05T15:04:35Z")
+            parse_timestamp("2026-10-05T15:04:35Z"),
+            "the same instant with different offsets parses to equal values"
         );
-        assert!(parse_timestamp("yesterday").is_none());
+        assert!(
+            parse_timestamp("yesterday").is_none(),
+            "text that is not a timestamp does not parse"
+        );
     }
 
     #[test]
@@ -237,11 +267,47 @@ mod tests {
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, ["one.settings.json", "two.settings.json"]);
+        assert_eq!(
+            names,
+            ["one.settings.json", "two.settings.json"],
+            "files are found in nested folders by suffix only"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_reached_through_a_symlink_is_read_once() {
+        let root = ScratchDir::new("symlinked-folder");
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("a.jsonl"), "").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+
+        let found = files_with_suffix(&root, ".jsonl").unwrap();
+
+        assert_eq!(found.len(), 1, "found {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_loop_ends_and_still_finds_the_files() {
+        let root = ScratchDir::new("symlink-loop");
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("a.jsonl"), "").unwrap();
+        std::os::unix::fs::symlink(&root, nested.join("back")).unwrap();
+        std::os::unix::fs::symlink(&nested, root.join("again")).unwrap();
+
+        let found = files_with_suffix(&root, ".jsonl").unwrap();
+
+        assert_eq!(found.len(), 1, "found {found:?}");
     }
 
     #[test]
     fn missing_root_is_an_error() {
-        assert!(files_with_suffix(Path::new("/nonexistent-droid-usage-root"), ".jsonl").is_err());
+        assert!(
+            files_with_suffix(Path::new("/nonexistent-droid-usage-root"), ".jsonl").is_err(),
+            "a missing root folder is reported as an error"
+        );
     }
 }

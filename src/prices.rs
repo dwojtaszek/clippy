@@ -236,7 +236,7 @@ fn lookup<'a>(rates: &'a BTreeMap<String, Rate>, model: &str) -> Option<&'a Rate
 
 /// Estimated USD cost of `tokens` at `rate`.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "token counts stay far below 2^53, and the result is an estimate"
 )]
@@ -410,7 +410,7 @@ pub fn record_check(dir: &Path, now: DateTime<Utc>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
-    use proptest::prelude::*;
+    use proptest::prelude::{prop_assert, proptest};
 
     use super::*;
     use crate::testing::{RECORDED_TABLE, ScratchDir};
@@ -473,28 +473,42 @@ mod tests {
         let parsed = parse_table(TABLE, at(10)).unwrap();
         assert_eq!(
             parsed.rates.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["openai/gpt-x", "sample_spec"]
+            ["openai/gpt-x", "sample_spec"],
+            "only chat models are kept and embedding or priceless models are dropped"
         );
         let gpt = parsed.rates["openai/gpt-x"];
-        assert_eq!(gpt.input, 2e-6);
-        assert_eq!(gpt.cache_read, 2e-7);
-        assert_eq!(gpt.cache_write, 2e-6);
+        assert_eq!(
+            gpt.input, 2e-6,
+            "the input price is read from the table as written"
+        );
+        assert_eq!(
+            gpt.cache_read, 2e-7,
+            "the cache read price is read from the table as written"
+        );
+        assert_eq!(
+            gpt.cache_write, 2e-6,
+            "a missing cache write price falls back to the input price"
+        );
     }
 
     #[test]
     fn a_negative_price_fails_the_whole_table() {
         let input = r#"{"a":{"mode":"chat","input_cost_per_token":-1,"output_cost_per_token":2}}"#;
-        assert!(matches!(
-            parse_table(input, at(10)),
-            Err(PriceError::Shape(_))
-        ));
+        assert!(
+            matches!(parse_table(input, at(10)), Err(PriceError::Shape(_))),
+            "a negative input price makes the whole table malformed"
+        );
         let cache = r#"{"a":{"mode":"chat","input_cost_per_token":1,"output_cost_per_token":2,"cache_read_input_token_cost":-0.5}}"#;
-        assert!(matches!(
-            parse_table(cache, at(10)),
-            Err(PriceError::Shape(_))
-        ));
+        assert!(
+            matches!(parse_table(cache, at(10)), Err(PriceError::Shape(_))),
+            "a negative cache read price makes the whole table malformed"
+        );
         let free = r#"{"a":{"mode":"chat","input_cost_per_token":0,"output_cost_per_token":0}}"#;
-        assert_eq!(parse_table(free, at(10)).unwrap().rates["a"].input, 0.0);
+        assert_eq!(
+            parse_table(free, at(10)).unwrap().rates["a"].input,
+            0.0,
+            "a zero price is accepted and kept as zero"
+        );
     }
 
     #[test]
@@ -505,26 +519,38 @@ mod tests {
             cache_read: 1.0,
             cache_write: 1.0,
         };
-        assert!(priced(0.0).is_valid());
-        assert!(!priced(-0.5).is_valid());
-        assert!(!priced(f64::NAN).is_valid());
-        assert!(!priced(f64::INFINITY).is_valid());
+        assert!(priced(0.0).is_valid(), "a zero price makes a valid rate");
+        assert!(
+            !priced(-0.5).is_valid(),
+            "a negative price makes a rate invalid"
+        );
+        assert!(
+            !priced(f64::NAN).is_valid(),
+            "a NaN price makes a rate invalid"
+        );
+        assert!(
+            !priced(f64::INFINITY).is_valid(),
+            "an infinite price makes a rate invalid"
+        );
     }
 
     #[test]
     fn parse_rejects_non_objects_and_empty_tables() {
-        assert!(matches!(
-            parse_table("[]", at(10)),
-            Err(PriceError::Shape(_))
-        ));
-        assert!(matches!(
-            parse_table("{not json", at(10)),
-            Err(PriceError::Json(_))
-        ));
-        assert!(matches!(
-            parse_table(r#"{"a":{"mode":"embedding"}}"#, at(10)),
-            Err(PriceError::Shape(_))
-        ));
+        assert!(
+            matches!(parse_table("[]", at(10)), Err(PriceError::Shape(_))),
+            "a top level array is rejected as a malformed table"
+        );
+        assert!(
+            matches!(parse_table("{not json", at(10)), Err(PriceError::Json(_))),
+            "text that is not JSON is rejected as a JSON error"
+        );
+        assert!(
+            matches!(
+                parse_table(r#"{"a":{"mode":"embedding"}}"#, at(10)),
+                Err(PriceError::Shape(_))
+            ),
+            "a table with only embedding models is rejected as malformed"
+        );
     }
 
     #[test]
@@ -538,18 +564,33 @@ mod tests {
                 ("azure/gpt-y", 4.0),
             ],
         )]);
-        assert_eq!(book.rate_at("gpt-x", at(11)).unwrap().input, 1.0);
-        assert_eq!(book.rate_at("gpt-y", at(11)).unwrap().input, 4.0);
-        assert!(book.rate_at("missing", at(11)).is_none());
+        assert_eq!(
+            book.rate_at("gpt-x", at(11)).unwrap().input,
+            1.0,
+            "an exact model key wins over a provider prefixed match"
+        );
+        assert_eq!(
+            book.rate_at("gpt-y", at(11)).unwrap().input,
+            4.0,
+            "a bare name picks the one level provider prefix over deeper ones"
+        );
+        assert!(
+            book.rate_at("missing", at(11)).is_none(),
+            "a model name with no matching key has no rate"
+        );
     }
 
     #[test]
     fn exact_rate_at_never_falls_back_to_another_provider() {
         let book = PriceBook::new(vec![snapshot(10, &[("azure/gpt-y", 4.0)])]);
-        assert!(book.exact_rate_at("gpt-y", at(11)).is_none());
+        assert!(
+            book.exact_rate_at("gpt-y", at(11)).is_none(),
+            "an exact lookup does not match a provider prefixed key by bare name"
+        );
         assert_eq!(
             book.exact_rate_at("azure/gpt-y", at(11)).unwrap().input,
-            4.0
+            4.0,
+            "an exact lookup finds the full provider prefixed key"
         );
     }
 
@@ -559,11 +600,31 @@ mod tests {
             snapshot(20, &[("m", 2.0)]),
             snapshot(10, &[("m", 1.0)]),
         ]);
-        assert_eq!(book.rate_at("m", at(5)).unwrap().input, 1.0);
-        assert_eq!(book.rate_at("m", at(10)).unwrap().input, 1.0);
-        assert_eq!(book.rate_at("m", at(15)).unwrap().input, 1.0);
-        assert_eq!(book.rate_at("m", at(20)).unwrap().input, 2.0);
-        assert_eq!(book.rate_at("m", at(28)).unwrap().input, 2.0);
+        assert_eq!(
+            book.rate_at("m", at(5)).unwrap().input,
+            1.0,
+            "a time before every snapshot uses the earliest snapshot rate"
+        );
+        assert_eq!(
+            book.rate_at("m", at(10)).unwrap().input,
+            1.0,
+            "the earliest snapshot still applies at its own fetch instant"
+        );
+        assert_eq!(
+            book.rate_at("m", at(15)).unwrap().input,
+            1.0,
+            "between snapshots the older snapshot rate still applies"
+        );
+        assert_eq!(
+            book.rate_at("m", at(20)).unwrap().input,
+            2.0,
+            "at the newer snapshot instant the newer rate applies"
+        );
+        assert_eq!(
+            book.rate_at("m", at(28)).unwrap().input,
+            2.0,
+            "a time after the newer snapshot keeps using its rate"
+        );
     }
 
     #[test]
@@ -581,7 +642,10 @@ mod tests {
             cache_write: 2.5e-6,
         };
         let expected = 2.0 + 5.0 + 0.4;
-        assert!((cost_usd(&tokens, &r) - expected).abs() < 1e-9);
+        assert!(
+            (cost_usd(&tokens, &r) - expected).abs() < 1e-9,
+            "cost is each token count times its own per token rate, summed"
+        );
     }
 
     #[test]
@@ -602,17 +666,33 @@ mod tests {
         ];
         price_sessions(&mut sessions, &book);
         // One million input tokens at $1 each.
-        assert!((sessions[0].cost_usd.unwrap() - 1_000_000.0).abs() < 1e-3);
-        assert_eq!(sessions[1].cost_usd, None);
-        assert_eq!(sessions[2].cost_usd, None);
-        assert_eq!(sessions[3].cost_usd, Some(0.0));
+        assert!(
+            (sessions[0].cost_usd.unwrap() - 1_000_000.0).abs() < 1e-3,
+            "a session cost is its token count times the model rate"
+        );
+        assert_eq!(
+            sessions[1].cost_usd, None,
+            "a session whose model is not in the book has no cost"
+        );
+        assert_eq!(
+            sessions[2].cost_usd, None,
+            "a session with no model has no cost"
+        );
+        assert_eq!(
+            sessions[3].cost_usd,
+            Some(0.0),
+            "a recorded cost is kept even when the book has a rate"
+        );
     }
 
     #[test]
     fn snapshots_round_trip_through_json() {
         let original = snapshot(10, &[("m", 1.5e-6)]);
         let back = Snapshot::from_json(&original.to_json()).unwrap();
-        assert_eq!(back, original);
+        assert_eq!(
+            back, original,
+            "a snapshot survives a JSON round trip unchanged"
+        );
     }
 
     #[test]
@@ -620,42 +700,88 @@ mod tests {
         let good = snapshot(10, &[("m", 1.0)]).to_json();
         let mut corrupt = good.clone();
         corrupt["rates"]["m"]["input"] = json!("bad");
-        assert_eq!(Snapshot::from_json(&corrupt), None);
+        assert_eq!(
+            Snapshot::from_json(&corrupt),
+            None,
+            "a snapshot with a non numeric rate is not read"
+        );
         let mut negative = good.clone();
         negative["rates"]["m"]["output"] = json!(-1.0);
-        assert_eq!(Snapshot::from_json(&negative), None);
+        assert_eq!(
+            Snapshot::from_json(&negative),
+            None,
+            "a snapshot with a negative rate is not read"
+        );
         let mut empty = good;
         empty["rates"] = json!({});
-        assert_eq!(Snapshot::from_json(&empty), None);
+        assert_eq!(
+            Snapshot::from_json(&empty),
+            None,
+            "a snapshot with no rates is not read"
+        );
     }
 
     #[test]
     fn refresh_saves_only_changes_and_records_each_check() {
         let dir = ScratchDir::new("prices-refresh");
-        assert!(is_stale(&dir, at(10)));
+        assert!(
+            is_stale(&dir, at(10)),
+            "a folder with no recorded check yet is stale"
+        );
 
         let first = refresh(&dir, at(10), TABLE).unwrap();
-        assert_eq!(first, Refresh::Updated);
-        assert_eq!(last_checked(&dir), Some(at(10)));
-        assert!(!is_stale(&dir, at(10) + TimeDelta::hours(1)));
-        assert!(is_stale(&dir, at(11) + TimeDelta::hours(1)));
+        assert_eq!(
+            first,
+            Refresh::Updated,
+            "the first refresh stores the table and reports an update"
+        );
+        assert_eq!(
+            last_checked(&dir),
+            Some(at(10)),
+            "the refresh instant is recorded as the last check time"
+        );
+        assert!(
+            !is_stale(&dir, at(10) + TimeDelta::hours(1)),
+            "a check one hour old is not yet stale"
+        );
+        assert!(
+            is_stale(&dir, at(11) + TimeDelta::hours(1)),
+            "a check more than a day old is stale"
+        );
 
         let same = refresh(&dir, at(11), TABLE).unwrap();
-        assert_eq!(same, Refresh::Unchanged);
+        assert_eq!(
+            same,
+            Refresh::Unchanged,
+            "a refresh with an identical table reports no change"
+        );
         assert_eq!(
             load(&dir)
                 .unwrap()
                 .rate_at("openai/gpt-x", at(12))
                 .unwrap()
                 .input,
-            2e-6
+            2e-6,
+            "an unchanged refresh keeps the original rate in the saved book"
         );
 
         let changed = TABLE.replace("2e-06", "1e-06");
-        assert_eq!(refresh(&dir, at(12), &changed).unwrap(), Refresh::Updated);
+        assert_eq!(
+            refresh(&dir, at(12), &changed).unwrap(),
+            Refresh::Updated,
+            "a refresh with a changed rate reports an update"
+        );
         let book = load(&dir).unwrap();
-        assert_eq!(book.rate_at("openai/gpt-x", at(11)).unwrap().input, 2e-6);
-        assert_eq!(book.rate_at("openai/gpt-x", at(13)).unwrap().input, 1e-6);
+        assert_eq!(
+            book.rate_at("openai/gpt-x", at(11)).unwrap().input,
+            2e-6,
+            "a time before the change still sees the old rate"
+        );
+        assert_eq!(
+            book.rate_at("openai/gpt-x", at(13)).unwrap().input,
+            1e-6,
+            "a time after the change sees the new rate"
+        );
     }
 
     #[test]
@@ -669,11 +795,18 @@ mod tests {
                 output: 3e-5,
                 cache_read: 5e-7,
                 cache_write: 5e-6,
-            }
+            },
+            "chat rates come from the table and a missing cache write price uses input"
         );
         // An explicit zero in the table stays zero.
-        assert_eq!(rates["zai/glm-5.2"].cache_write, 0.0);
-        assert!(!rates.contains_key("amazon.titan-embed-text-v1"));
+        assert_eq!(
+            rates["zai/glm-5.2"].cache_write, 0.0,
+            "an explicit zero cache write price in the table stays zero"
+        );
+        assert!(
+            !rates.contains_key("amazon.titan-embed-text-v1"),
+            "embedding models are left out of the rates"
+        );
     }
 
     #[test]
@@ -685,14 +818,25 @@ mod tests {
 
         let at_instant = parse_timestamp("2026-10-11T19:00:00-05:00").unwrap();
         let just_before = parse_timestamp("2026-10-11T18:59:59-05:00").unwrap();
-        assert_eq!(book.rate_at("m", at_instant).unwrap().input, 2.0);
-        assert_eq!(book.rate_at("m", just_before).unwrap().input, 1.0);
+        assert_eq!(
+            book.rate_at("m", at_instant).unwrap().input,
+            2.0,
+            "a snapshot applies from its exact instant even with a UTC offset"
+        );
+        assert_eq!(
+            book.rate_at("m", just_before).unwrap().input,
+            1.0,
+            "one second before the instant the older snapshot still applies"
+        );
     }
 
     #[test]
     fn missing_folder_is_an_empty_book() {
         let book = load(Path::new("/nonexistent-droid-usage-prices")).unwrap();
-        assert!(book.is_empty());
+        assert!(
+            book.is_empty(),
+            "a missing snapshot folder loads as an empty book"
+        );
     }
 
     #[test]
@@ -704,17 +848,25 @@ mod tests {
         fs::write(dir.join("notes.txt"), "ignored, not a snapshot").unwrap();
 
         let loaded = read(&dir).unwrap();
-        assert_eq!(loaded.skipped, ["broken.json", "wrong-shape.json"]);
+        assert_eq!(
+            loaded.skipped,
+            ["broken.json", "wrong-shape.json"],
+            "unreadable snapshots are named as skipped and other files are ignored"
+        );
         assert_eq!(
             loaded.book.rate_at("openai/gpt-x", at(11)).unwrap().input,
-            1.0
+            1.0,
+            "the good snapshot still loads after the bad ones are skipped"
         );
     }
 
     #[test]
     fn an_empty_book_is_empty_and_a_saved_one_is_not() {
-        assert!(PriceBook::default().is_empty());
-        assert!(!PriceBook::new(vec![snapshot(10, &[("m", 1.0)])]).is_empty());
+        assert!(PriceBook::default().is_empty(), "a default book is empty");
+        assert!(
+            !PriceBook::new(vec![snapshot(10, &[("m", 1.0)])]).is_empty(),
+            "a book holding a snapshot is not empty"
+        );
     }
 
     #[test]
@@ -723,15 +875,18 @@ mod tests {
         assert!(
             PriceError::Json(json)
                 .to_string()
-                .starts_with("price table is not JSON: ")
+                .starts_with("price table is not JSON: "),
+            "a JSON price error message starts with the price table prefix"
         );
         assert_eq!(
             PriceError::Shape("empty").to_string(),
-            "price table is malformed: empty"
+            "price table is malformed: empty",
+            "a shape price error message names the malformed table and the detail"
         );
         assert_eq!(
             PriceError::Io(io::Error::other("disk")).to_string(),
-            "price snapshot: disk"
+            "price snapshot: disk",
+            "an io price error message names the snapshot and the cause"
         );
     }
 
@@ -739,24 +894,46 @@ mod tests {
     fn a_snapshot_folder_that_is_a_file_is_an_error() {
         let path = ScratchDir::new("prices-file-not-dir");
         fs::write(&path, "not a folder").unwrap();
-        assert!(load(&path).is_err());
+        assert!(
+            load(&path).is_err(),
+            "a snapshot path that is a file rather than a folder fails to load"
+        );
     }
 
     #[test]
     fn errors_report_their_underlying_cause() {
         let json = serde_json::from_str::<Value>("{").unwrap_err();
-        assert!(PriceError::Json(json).source().is_some());
-        assert!(PriceError::Io(io::Error::other("disk")).source().is_some());
-        assert!(PriceError::Shape("empty").source().is_none());
+        assert!(
+            PriceError::Json(json).source().is_some(),
+            "a JSON price error exposes its underlying parse error as source"
+        );
+        assert!(
+            PriceError::Io(io::Error::other("disk")).source().is_some(),
+            "an io price error exposes its underlying cause as source"
+        );
+        assert!(
+            PriceError::Shape("empty").source().is_none(),
+            "a shape price error has no underlying source"
+        );
     }
 
     #[test]
     fn staleness_starts_after_exactly_a_day() {
         let dir = ScratchDir::new("prices-stale");
-        assert_eq!(refresh(&dir, at(10), TABLE).unwrap(), Refresh::Updated);
+        assert_eq!(
+            refresh(&dir, at(10), TABLE).unwrap(),
+            Refresh::Updated,
+            "the first refresh of an empty folder stores the table"
+        );
         let day = TimeDelta::hours(24);
-        assert!(!is_stale(&dir, at(10) + day));
-        assert!(is_stale(&dir, at(10) + day + TimeDelta::seconds(1)));
+        assert!(
+            !is_stale(&dir, at(10) + day),
+            "a check exactly one day old is not yet stale"
+        );
+        assert!(
+            is_stale(&dir, at(10) + day + TimeDelta::seconds(1)),
+            "a check one second over a day old is stale"
+        );
     }
 
     proptest! {
