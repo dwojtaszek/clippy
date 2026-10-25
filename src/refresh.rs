@@ -10,11 +10,11 @@ use crate::{multipliers, prices};
 
 /// Parses both downloads, then saves both snapshots.
 ///
-/// Nothing is saved unless both parse, so prices and multipliers always come from the same check. The check time is written last, so a failed save is retried on the next run.
+/// Nothing is saved unless both parse. If the multiplier save fails, the new price snapshot is removed again, so both tables still come from the last successful check. The check time is written last, so a failed save is retried on the next run.
 ///
 /// # Errors
 ///
-/// Returns an error when either text is malformed or a snapshot cannot be written.
+/// Returns an error when either text is malformed or a snapshot cannot be written. If the new price snapshot also cannot be removed, the error says so.
 pub fn apply(
     prices_dir: &Path,
     multipliers_dir: &Path,
@@ -24,8 +24,15 @@ pub fn apply(
 ) -> Result<(), Box<dyn Error>> {
     let prices = prices::parse_table(table, now)?;
     let multipliers = multipliers::parse_page(page, now)?;
-    let _ = prices::save(prices_dir, &prices)?;
-    let _ = multipliers::save(multipliers_dir, &multipliers)?;
+    let prices_saved = prices::save(prices_dir, &prices)?;
+    if let Err(err) = multipliers::save(multipliers_dir, &multipliers) {
+        if prices_saved == prices::Refresh::Updated {
+            prices::remove_snapshot(prices_dir, now).map_err(|undo| {
+                format!("{err}; the new price snapshot could not be removed: {undo}")
+            })?;
+        }
+        return Err(err.into());
+    }
     prices::record_check(prices_dir, now)?;
     Ok(())
 }
@@ -153,6 +160,77 @@ mod tests {
             last_checked(&prices_dir),
             None,
             "the check time is not recorded when the table is bad"
+        );
+    }
+
+    #[test]
+    fn a_failed_multiplier_save_leaves_no_new_price_snapshot() {
+        let root = ScratchDir::new("refresh-multiplier-save");
+        let (prices_dir, multipliers_dir) = (root.join("prices"), root.join("multipliers"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&multipliers_dir, "a file where the folder should be").unwrap();
+
+        assert!(
+            apply(
+                &prices_dir,
+                &multipliers_dir,
+                at(),
+                SAMPLE_TABLE,
+                SAMPLE_PAGE
+            )
+            .is_err(),
+            "a multiplier folder that cannot be read fails the refresh"
+        );
+        assert!(
+            prices::load(&prices_dir).unwrap().is_empty(),
+            "the price snapshot written before the failure is removed again"
+        );
+        assert_eq!(
+            last_checked(&prices_dir),
+            None,
+            "the check time is not recorded when the multiplier save fails"
+        );
+    }
+
+    #[test]
+    fn a_failed_multiplier_save_keeps_the_previous_price_snapshot() {
+        let root = ScratchDir::new("refresh-multiplier-save-old");
+        let (prices_dir, multipliers_dir) = (root.join("prices"), root.join("multipliers"));
+        apply(
+            &prices_dir,
+            &multipliers_dir,
+            at(),
+            SAMPLE_TABLE,
+            SAMPLE_PAGE,
+        )
+        .unwrap();
+        fs::remove_dir_all(&multipliers_dir).unwrap();
+        fs::write(&multipliers_dir, "a file where the folder should be").unwrap();
+
+        let later = at() + TimeDelta::hours(25);
+        let changed_table = SAMPLE_TABLE.replace("2e-06", "3e-06");
+        assert!(
+            apply(
+                &prices_dir,
+                &multipliers_dir,
+                later,
+                &changed_table,
+                SAMPLE_PAGE
+            )
+            .is_err(),
+            "a multiplier folder that cannot be read fails the refresh"
+        );
+
+        let book = prices::load(&prices_dir).unwrap();
+        assert_eq!(
+            book.rate_at("gpt-5.6-sol", later),
+            book.rate_at("gpt-5.6-sol", at()),
+            "the price in effect is still the one from the last successful check"
+        );
+        assert_eq!(
+            last_checked(&prices_dir),
+            Some(at()),
+            "the check time stays at the last successful check"
         );
     }
 

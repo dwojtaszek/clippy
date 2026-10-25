@@ -389,9 +389,21 @@ pub(crate) fn write_snapshot(
     json: &Value,
 ) -> io::Result<Refresh> {
     fs::create_dir_all(dir)?;
-    let name = format!("{}.json", fetched.format("%Y%m%dT%H%M%SZ"));
-    fs::write(dir.join(name), json.to_string())?;
+    fs::write(dir.join(snapshot_file_name(fetched)), json.to_string())?;
     Ok(Refresh::Updated)
+}
+
+/// Removes the snapshot that `write_snapshot` wrote for `fetched`.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot cannot be removed.
+pub(crate) fn remove_snapshot(dir: &Path, fetched: DateTime<Utc>) -> io::Result<()> {
+    fs::remove_file(dir.join(snapshot_file_name(fetched)))
+}
+
+fn snapshot_file_name(fetched: DateTime<Utc>) -> String {
+    format!("{}.json", fetched.format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Records `now` as the time the tables were last checked.
