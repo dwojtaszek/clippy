@@ -11,7 +11,7 @@ Ponytail controls how much to build and change. Its rules are the source of trut
 
 ## Rust (style)
 
-Use the `rust-best-practices` skill (`.factory/skills/rust-best-practices/SKILL.md`) for any Rust code: writing, reviewing, or refactoring.
+Follow the `rust-best-practices` skill (`.factory/skills/rust-best-practices/SKILL.md`) for all Rust code: writing, reviewing, or refactoring. It is mandatory. Its source and update steps are in the skill's first section. Where its rules conflict with the Ponytail scope rules, follow *When the two rules disagree* below.
 
 Before handing back Rust code, run and fix:
 
