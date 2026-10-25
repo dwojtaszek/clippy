@@ -16,8 +16,11 @@ to compare with the golden report by hand.
 
 To regenerate the expected output after a fixture change:
 
-    HOME=$PWD/tests/golden/home NO_COLOR=1 cargo run -q -- --offline \\
+    cargo build -q
+    HOME=$PWD/tests/golden/home NO_COLOR=1 target/debug/droid-usage --offline \\
         > tests/golden/report.txt 2> tests/golden/warnings.txt
+
+Run the built binary, not `cargo run`. With HOME set to the fixtures, rustup cannot find its toolchain, so `cargo run` fails.
 
 The script removes `--out` before writing it. Point it only at tests/golden/home.
 """

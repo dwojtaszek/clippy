@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use common::ScratchDir;
+use snapbox::{Assert, Data};
 
 fn run_binary(args: &[&str], home: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_droid-usage"))
@@ -45,4 +46,18 @@ fn unknown_argument_fails_and_is_named() {
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("--bogus"), "{stderr}");
+}
+
+// Drift check: the regeneration command in `tests/golden/anonymize.py` (the binary, with HOME set to the fixtures
+// and `NO_COLOR=1`) must reproduce the saved golden files byte for byte.
+#[test]
+fn golden_fixtures_reproduce_the_saved_output_through_the_binary() {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let output = run_binary(&["--offline"], &golden.join("home"));
+
+    assert!(output.status.success(), "{output:?}");
+    let want_report = Data::read_from(&golden.join("report.txt"), None).raw();
+    let want_warnings = Data::read_from(&golden.join("warnings.txt"), None).raw();
+    Assert::new().eq(String::from_utf8(output.stdout).unwrap(), want_report);
+    Assert::new().eq(String::from_utf8(output.stderr).unwrap(), want_warnings);
 }

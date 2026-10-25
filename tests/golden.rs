@@ -2,12 +2,12 @@
 //!
 //! `tests/golden/home` holds the fixtures, built by `tests/golden/anonymize.py`. They keep token counts, model names, timestamps, and costs, and they replace paths, IDs, and text. The expected output is `report.txt` and `warnings.txt` beside them. The file header of `anonymize.py` says how to regenerate both after a change.
 
-use std::fs;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 use droid_usage::app::{self, Mode};
 use droid_usage::report::Colors;
+use snapbox::{Assert, Data};
 
 #[test]
 fn report_matches_the_golden_output_for_anonymized_sessions() {
@@ -25,16 +25,10 @@ fn report_matches_the_golden_output_for_anonymized_sessions() {
     )
     .unwrap();
 
-    let want_report = fs::read_to_string(golden.join("report.txt")).unwrap();
-    let want_warnings = fs::read_to_string(golden.join("warnings.txt")).unwrap();
-    assert_eq!(
-        String::from_utf8(out).unwrap(),
-        want_report,
-        "the report output matches the saved golden report file"
-    );
-    assert_eq!(
-        String::from_utf8(err).unwrap(),
-        want_warnings,
-        "the warnings output matches the saved golden warnings file"
-    );
+    // Raw data has no wildcard or path filters, so the saved files must match byte for byte
+    // (line endings aside). `Assert::new` ignores the SNAPSHOTS variable, so a shell setting cannot skip the check.
+    let want_report = Data::read_from(&golden.join("report.txt"), None).raw();
+    let want_warnings = Data::read_from(&golden.join("warnings.txt"), None).raw();
+    Assert::new().eq(String::from_utf8(out).unwrap(), want_report);
+    Assert::new().eq(String::from_utf8(err).unwrap(), want_warnings);
 }
