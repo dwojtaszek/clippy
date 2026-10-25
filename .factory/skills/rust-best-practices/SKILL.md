@@ -12,6 +12,8 @@ description: >-
 
 # Rust best practices
 
+Source: https://github.com/morganlinton/BeautifulRust/tree/main/skills/rust-best-practices (MIT). Apart from this line, the copy matches upstream commit `4f1c0d1`. To update, replace this folder with the upstream folder, then review the diff.
+
 Distilled from five sources, with full per-source digests in `references/`: the Google
 Rust Style Guide, the official Rust API Guidelines, *Effective Rust* (David Drysdale),
 *Rust Design Patterns* (rust-unofficial), and Microsoft's Pragmatic Rust Guidelines.
