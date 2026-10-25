@@ -1,0 +1,44 @@
+# Dependency checks for `cargo deny check`: advisories, licenses, duplicate versions, and sources.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+# The crate itself is private (publish = false), so its license is not checked.
+private = { ignore = true }
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+skip = [
+    # Two syn majors come from separate dependency trees: chrono's Windows
+    # helpers and rusqlite's proc macros. Neither tree can be unified from here.
+    { crate = "syn@2", reason = "pulled in by chrono and the Windows helper crates" },
+    { crate = "syn@3", reason = "pulled in by rusqlite's sqlite-wasm and thiserror" },
+    # windows-sys 0.52 comes from ring (rustls under ureq), 0.61 from console and crossterm (comfy-table).
+    # Both are Windows-only bindings that each tree pins; no single version satisfies both.
+    { crate = "windows-sys@0.52", reason = "pinned by ring, the TLS backend under ureq" },
+    { crate = "windows-sys@0.61", reason = "pinned by console and crossterm, the table and color crates" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

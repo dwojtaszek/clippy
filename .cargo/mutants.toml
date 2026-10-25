@@ -1,0 +1,2 @@
+# Mutants build with lints capped, so a mutant that only trips a warning still compiles and gets tested.
+cap_lints = true

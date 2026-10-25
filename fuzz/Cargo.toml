@@ -1,0 +1,29 @@
+[package]
+name = "droid-usage-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+libfuzzer-sys = "0.4"
+
+[dependencies.droid-usage]
+path = ".."
+
+[[bin]]
+name = "multipliers_page"
+path = "fuzz_targets/multipliers_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prices_table"
+path = "fuzz_targets/prices_table.rs"
+test = false
+doc = false
+bench = false

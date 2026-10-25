@@ -1,0 +1,11 @@
+{
+ "model": "glm-5.2",
+ "tokenUsage": {
+  "inputTokens": 13674,
+  "outputTokens": 3,
+  "cacheCreationTokens": 0,
+  "cacheReadTokens": 0,
+  "thinkingTokens": 0,
+  "factoryCredits": 7526
+ }
+}

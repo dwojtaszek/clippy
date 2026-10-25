@@ -1,0 +1,293 @@
+{
+ "fetched": "2026-10-24T19:26:44Z",
+ "models": {
+  "beam-1.0": {
+   "promo": null,
+   "rate": 0.52
+  },
+  "claude-fable-5": {
+   "promo": null,
+   "rate": 4.0
+  },
+  "claude-fable-5.1": {
+   "promo": null,
+   "rate": 4.0
+  },
+  "claude-haiku-4-5-20251001": {
+   "promo": null,
+   "rate": 0.4
+  },
+  "claude-haiku-5-5": {
+   "promo": null,
+   "rate": 0.04
+  },
+  "claude-opus-4-5-20251101": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "claude-opus-4-6": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "claude-opus-4-7": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "claude-opus-4-8": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "claude-opus-4-8-fast": {
+   "promo": null,
+   "rate": 4.0
+  },
+  "claude-opus-5": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "claude-opus-5-5": {
+   "promo": null,
+   "rate": 1.6
+  },
+  "claude-opus-5-5-fast": {
+   "promo": null,
+   "rate": 3.2
+  },
+  "claude-opus-5-fast": {
+   "promo": null,
+   "rate": 4.0
+  },
+  "claude-sonnet-4-5-20250929": {
+   "promo": null,
+   "rate": 1.2
+  },
+  "claude-sonnet-4-6": {
+   "promo": null,
+   "rate": 1.2
+  },
+  "claude-sonnet-5": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "claude-sonnet-5-5": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "deepseek-v4-flash-0731": {
+   "promo": null,
+   "rate": 0.176
+  },
+  "deepseek-v4-pro": {
+   "promo": null,
+   "rate": 0.528
+  },
+  "deepseek-v4.1-flash": {
+   "promo": null,
+   "rate": 0.12
+  },
+  "deepseek-v4.1-flash-1017": {
+   "promo": null,
+   "rate": 0.12
+  },
+  "gemini-3-flash-preview": {
+   "promo": null,
+   "rate": 0.2
+  },
+  "gemini-3.1-pro-preview": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "gemini-3.5-flash": {
+   "promo": null,
+   "rate": 0.6
+  },
+  "gemini-3.6-flash": {
+   "promo": null,
+   "rate": 0.6
+  },
+  "gemini-3.7-flash": {
+   "promo": {
+    "after": 0.6,
+    "through": "2027-01-01"
+   },
+   "rate": 0.3
+  },
+  "gemini-3.8-flash": {
+   "promo": {
+    "after": 0.6,
+    "through": "2027-01-01"
+   },
+   "rate": 0.3
+  },
+  "glm-5.1": {
+   "promo": null,
+   "rate": 0.55
+  },
+  "glm-5.2": {
+   "promo": null,
+   "rate": 0.56
+  },
+  "glm-5.2-fast": {
+   "promo": null,
+   "rate": 0.84
+  },
+  "glm-5.3": {
+   "promo": null,
+   "rate": 0.56
+  },
+  "glm-5.3-flash": {
+   "promo": null,
+   "rate": 0.06
+  },
+  "gpt-5.2": {
+   "promo": null,
+   "rate": 0.7
+  },
+  "gpt-5.3-codex": {
+   "promo": null,
+   "rate": 0.7
+  },
+  "gpt-5.3-codex-fast": {
+   "promo": null,
+   "rate": 1.4
+  },
+  "gpt-5.4": {
+   "promo": null,
+   "rate": 1.0
+  },
+  "gpt-5.4-fast": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "gpt-5.4-mini": {
+   "promo": null,
+   "rate": 0.3
+  },
+  "gpt-5.4-mini-fast": {
+   "promo": null,
+   "rate": 0.6
+  },
+  "gpt-5.5": {
+   "promo": null,
+   "rate": 2.0
+  },
+  "gpt-5.5-fast": {
+   "promo": null,
+   "rate": 5.0
+  },
+  "gpt-5.5-pro": {
+   "promo": null,
+   "rate": 12.0
+  },
+  "gpt-5.6-luna": {
+   "promo": null,
+   "rate": 0.08
+  },
+  "gpt-5.6-sol": {
+   "promo": {
+    "after": 2.0,
+    "through": "2026-11-22"
+   },
+   "rate": 1.6
+  },
+  "gpt-5.6-sol-fast": {
+   "promo": {
+    "after": 4.0,
+    "through": "2026-11-22"
+   },
+   "rate": 3.2
+  },
+  "gpt-5.6-terra": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "gpt-6-astra": {
+   "promo": null,
+   "rate": 4.0
+  },
+  "gpt-6-luna": {
+   "promo": null,
+   "rate": 0.04
+  },
+  "gpt-6-luna-fast": {
+   "promo": null,
+   "rate": 0.08
+  },
+  "gpt-6-sol": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "gpt-6-sol-fast": {
+   "promo": null,
+   "rate": 1.6
+  },
+  "gpt-6.1-sol": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "gpt-6.1-sol-ultrafast": {
+   "promo": null,
+   "rate": 4.8
+  },
+  "grok-4.5": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "grok-4.6": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "grok-4.7": {
+   "promo": null,
+   "rate": 0.8
+  },
+  "inkling": {
+   "promo": null,
+   "rate": 0.4
+  },
+  "kimi-k2.5": {
+   "promo": null,
+   "rate": 0.25
+  },
+  "kimi-k3": {
+   "promo": null,
+   "rate": 1.2
+  },
+  "minimax-m2.7": {
+   "promo": null,
+   "rate": 0.12
+  },
+  "minimax-m3": {
+   "promo": null,
+   "rate": 0.12
+  },
+  "minimax-m3.1-flash": {
+   "promo": null,
+   "rate": 0.06
+  },
+  "mistral-large-4": {
+   "promo": null,
+   "rate": 0.544
+  },
+  "mistral-medium-3.5": {
+   "promo": null,
+   "rate": 0.6
+  },
+  "muse-spark-1.2": {
+   "promo": null,
+   "rate": 0.5
+  },
+  "nemotron-3-ultra": {
+   "promo": null,
+   "rate": 0.24
+  },
+  "nemotron-3.5-super": {
+   "promo": null,
+   "rate": 0.08
+  },
+  "qwen3.8-max": {
+   "promo": null,
+   "rate": 0.8
+  }
+ }
+}

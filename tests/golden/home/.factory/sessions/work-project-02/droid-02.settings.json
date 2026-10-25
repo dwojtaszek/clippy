@@ -1,0 +1,11 @@
+{
+ "model": "kimi-k3",
+ "tokenUsage": {
+  "inputTokens": 82393,
+  "outputTokens": 4944,
+  "cacheCreationTokens": 0,
+  "cacheReadTokens": 522964,
+  "thinkingTokens": 0,
+  "factoryCredits": 95651
+ }
+}

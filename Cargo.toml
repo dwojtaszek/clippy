@@ -1,0 +1,52 @@
+[package]
+name = "droid-usage"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+comfy-table = "8.0.1"
+console = "0.16.6"
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+serde_json = "1.0.154"
+unicode-width = "0.2.2"
+ureq = "3.5.0"
+
+[dev-dependencies]
+proptest = "1.12.0"
+
+[lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unused_results = "deny"
+
+[lints.rustdoc]
+all = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Fused multiply-add only trades precision for speed on some hardware. Cost estimates do not need it.
+suboptimal_flops = "allow"
+# Duplicate versions come from dependencies' own trees. cargo-deny checks them (see deny.toml).
+multiple_crate_versions = "allow"
+# Clippy's restriction group contradicts itself and is not meant to be enabled whole.
+# Selected restriction lints that do not conflict with the rest:
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+allow_attributes_without_reason = "deny"
