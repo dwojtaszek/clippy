@@ -10,8 +10,6 @@
 
 The report shows totals by source, a weekly trend, cost and tokens per model, and the top projects. The demo above runs `droid-usage --offline` on the anonymized fixtures in `tests/golden/home`.
 
-This repository is named `clippy`. The program it builds is `droid-usage`.
-
 ## Run
 
 ```sh
