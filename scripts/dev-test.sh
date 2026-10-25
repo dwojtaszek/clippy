@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fast loop while coding. Runs fmt and only the tests that cover the files changed against BASE.
+# Fast loop while coding. Runs fmt, clippy, and only the tests that cover the files changed against BASE,
+# then checks the test-count floor.
 # Usage: scripts/dev-test.sh [BASE]   BASE defaults to HEAD, so uncommitted work is what runs.
 # DRY_RUN=1 prints the plan without running it.
 
@@ -46,6 +47,7 @@ if ((rust_changes == 0)); then
 fi
 
 run_step "fmt" cargo fmt --check
+run_step "clippy" cargo clippy --all-targets --all-features -- -D warnings
 if ((run_all)); then
     run_step "tests (all)" cargo test
 else
@@ -60,4 +62,5 @@ else
         run_step "integration tests" cargo test "${test_args[@]}"
     fi
 fi
+run_step "test count" check_test_count
 finish

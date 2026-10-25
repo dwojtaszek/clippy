@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
 # Gate before you push or update a pull request. Runs every test and the lint and doc checks,
-# and mutates only the lines that differ from BASE. Hard limit: 120 seconds.
+# and mutates only the lines that differ from BASE. Time limit: 90 seconds, plus 2.5 seconds
+# per mutant on those lines, at most 300 seconds.
 # Usage: scripts/pre-pr-test.sh [BASE]   BASE defaults to origin/main.
 # DRY_RUN=1 prints the plan without running it.
-
-# Enforce the 120-second limit by running this same script under timeout.
-if [[ -z ${PRE_PR_TEST_TIMED:-} ]]; then
-    PRE_PR_TEST_TIMED=1 timeout --kill-after=10 120 "$0" "$@"
-    code=$?
-    if ((code == 124 || code == 137)); then
-        echo "pre-pr-test: stopped at the 120-second limit before it finished; the gate did not pass" >&2
-    fi
-    exit "$code"
-fi
 
 # shellcheck source=scripts/common.sh
 source "$(dirname "$0")/common.sh"
@@ -21,6 +12,19 @@ base=${1:-origin/main}
 if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
     echo "pre-pr-test: unknown base $base (run git fetch first)" >&2
     exit 2
+fi
+
+# Enforce the time limit by running this same script under timeout. The limit grows with the mutant count.
+if [[ -z ${PRE_PR_TEST_TIMED:-} ]]; then
+    count=$(mutant_count "$base") || exit 2
+    limit=$(time_limit "$count")
+    echo "pre-pr-test: $count mutants on the changed lines, time limit ${limit}s"
+    PRE_PR_TEST_TIMED=1 timeout --kill-after=10 "$limit" "$0" "$@"
+    code=$?
+    if ((code == 124 || code == 137)); then
+        echo "pre-pr-test: stopped at the ${limit}-second limit before it finished; the gate did not pass" >&2
+    fi
+    exit "$code"
 fi
 
 changed=$(git diff --name-only "$base")

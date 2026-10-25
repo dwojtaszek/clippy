@@ -114,6 +114,33 @@ run_mutants() {
     return $status
 }
 
+# mutant_count BASE: prints how many mutants cargo-mutants generates on the lines that differ from BASE.
+mutant_count() {
+    local base=$1 diff listed status
+    diff=$(mktemp) || return 1
+    git diff -U0 "$base" -- 'src/*.rs' >"$diff"
+    if [[ ! -s $diff ]]; then
+        rm -f "$diff"
+        echo 0
+        return 0
+    fi
+    listed=$(cargo mutants --list --in-diff "$diff" 2>/dev/null)
+    status=$?
+    rm -f "$diff"
+    if ((status != 0)); then
+        echo "could not list the mutants on the changed lines (cargo mutants --list failed)" >&2
+        return 1
+    fi
+    grep -c . <<<"$listed" || true
+}
+
+# time_limit COUNT: prints the pre-PR time limit in seconds: 90, plus 2.5 per mutant, at most 300.
+time_limit() {
+    local limit=$((90 + $1 * 5 / 2))
+    ((limit > 300)) && limit=300
+    echo "$limit"
+}
+
 # changed_lines_mutants BASE: mutation-tests only the lines that differ from BASE.
 changed_lines_mutants() {
     local base=$1 diff status
