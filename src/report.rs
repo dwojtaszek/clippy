@@ -60,7 +60,7 @@ impl Totals {
             Some(cost) => {
                 self.priced += 1;
                 self.cost_usd += cost;
-                self.priced_tokens += session.tokens.total();
+                self.priced_tokens = self.priced_tokens.saturating_add(session.tokens.total());
             }
             None if used => self.unpriced += 1,
             None => {}
@@ -677,6 +677,27 @@ mod tests {
             per_million(&Totals::default()),
             "-",
             "cost per million shows a dash when there are no tokens"
+        );
+    }
+
+    #[test]
+    fn token_totals_stop_at_the_maximum_instead_of_overflowing() {
+        let huge = Session {
+            cost_usd: Some(1.0),
+            ..session_on(date(2026, 10, 5), u64::MAX)
+        };
+        let mut totals = Totals::default();
+        totals.add_session(&huge);
+        totals.add_session(&huge);
+        assert_eq!(
+            totals.priced_tokens,
+            u64::MAX,
+            "priced tokens stop at u64::MAX"
+        );
+        assert_eq!(
+            totals.tokens.input,
+            u64::MAX,
+            "summed input tokens stop at u64::MAX"
         );
     }
 

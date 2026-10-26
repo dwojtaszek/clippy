@@ -374,7 +374,7 @@ pub fn save(dir: &Path, snapshot: &Snapshot) -> io::Result<Refresh> {
     write_snapshot(dir, snapshot.fetched, &snapshot.to_json())
 }
 
-/// Writes `json` into `dir` as a new snapshot named for `fetched`, creating `dir` first if needed.
+/// Writes `json` into `dir` as a new snapshot named for `fetched`, creating `dir` first if needed. The snapshot appears in one step, so a crash never leaves a partial `.json` file for readers to parse.
 ///
 /// # Errors
 ///
@@ -385,8 +385,24 @@ pub(crate) fn write_snapshot(
     json: &Value,
 ) -> io::Result<Refresh> {
     fs::create_dir_all(dir)?;
-    fs::write(dir.join(snapshot_file_name(fetched)), json.to_string())?;
+    let name = snapshot_file_name(fetched);
+    // The temp name ends in `.tmp`, so `read_snapshots` never reads it.
+    let temp = dir.join(format!(".{name}.tmp"));
+    let result =
+        write_synced(&temp, &json.to_string()).and_then(|()| fs::rename(&temp, dir.join(&name)));
+    if result.is_err() {
+        // Best effort: a leftover temp file is ignored by readers.
+        let _ = fs::remove_file(&temp);
+    }
+    result?;
     Ok(Refresh::Updated)
+}
+
+/// Writes `text` to `path` and flushes it to disk before returning.
+fn write_synced(path: &Path, text: &str) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    io::Write::write_all(&mut file, text.as_bytes())?;
+    file.sync_all()
 }
 
 /// Removes the snapshot that `write_snapshot` wrote for `fetched`.
@@ -905,6 +921,51 @@ mod tests {
         assert!(
             load(&path).is_err(),
             "a snapshot path that is a file rather than a folder fails to load"
+        );
+    }
+
+    #[test]
+    fn a_saved_snapshot_leaves_only_its_json_file_behind() {
+        let dir = ScratchDir::new("prices-no-temp");
+        let outcome = save(&dir, &snapshot(10, &[("m", 1.0)])).unwrap();
+        assert_eq!(
+            outcome,
+            Refresh::Updated,
+            "the first save writes a snapshot"
+        );
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["20261010T120000Z.json"],
+            "the temp file used for the write is renamed away, not left in the folder"
+        );
+    }
+
+    #[test]
+    fn a_failed_snapshot_write_leaves_the_folder_as_it_was() {
+        let dir = ScratchDir::new("prices-failed-write");
+        // A folder of the snapshot's name cannot be replaced by the rename, so the write fails.
+        fs::create_dir_all(dir.join("20261010T120000Z.json")).unwrap();
+        let result = write_snapshot(&dir, at(10), &json!({"fetched": "x"}));
+        assert!(
+            result.is_err(),
+            "a snapshot cannot replace a folder of the same name"
+        );
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["20261010T120000Z.json"],
+            "the failed write leaves no temp file behind"
+        );
+        assert!(
+            dir.join("20261010T120000Z.json").is_dir(),
+            "the existing folder is untouched"
         );
     }
 

@@ -13,10 +13,14 @@ use crate::model::{Read, Session, Source, Tokens, files_with_suffix, parse_times
 ///
 /// # Errors
 ///
-/// Returns an error when `root` or a folder under it cannot be read.
+/// Returns an error when `root` cannot be read. Folders under it that cannot be read are skipped and counted.
 pub fn read_sessions(root: &Path) -> std::io::Result<Read> {
-    let mut read = Read::default();
-    for settings in files_with_suffix(root, ".settings.json")? {
+    let found = files_with_suffix(root, ".settings.json")?;
+    let mut read = Read {
+        skipped: found.unreadable,
+        ..Read::default()
+    };
+    for settings in found.files {
         match session_from_files(&settings) {
             Some(session) => read.sessions.push(session),
             None => read.skipped += 1,
@@ -86,6 +90,29 @@ mod tests {
     use proptest::prelude::proptest;
 
     use super::*;
+    use crate::testing::ScratchDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_is_counted_as_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = ScratchDir::new("droid-locked-folder");
+        let locked = root.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let read = read_sessions(&root);
+
+        // Restore access so the scratch folder can be removed, whatever the result.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let read = read.unwrap();
+        assert_eq!(read.skipped, 1, "the locked folder is counted as skipped");
+        assert!(
+            read.sessions.is_empty(),
+            "no session comes from a locked folder"
+        );
+    }
 
     #[test]
     fn settings_give_own_usage_and_model() {

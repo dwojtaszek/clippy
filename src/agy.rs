@@ -40,7 +40,16 @@ pub fn read_sessions(root: &Path) -> io::Result<Read> {
             read.skipped += 1;
             continue;
         };
-        let model = model_from_db(&root.join("conversations").join(format!("{id}.db")));
+        let db = root.join("conversations").join(format!("{id}.db"));
+        let model = match model_from_db(&db) {
+            Ok(model) => model,
+            // A conversation with no database has no model to read. Any other failure is counted.
+            Err(_) if matches!(db.try_exists(), Ok(false)) => None,
+            Err(_) => {
+                read.models_unreadable += 1;
+                None
+            }
+        };
         read.sessions.push(Session {
             source: Source::Agy,
             started,
@@ -65,21 +74,23 @@ pub fn parse_transcript(reader: impl BufRead) -> Option<(DateTime<Utc>, Tokens)>
         if let Some(at) = value["created_at"].as_str().and_then(parse_timestamp) {
             started = Some(started.map_or(at, |first| first.min(at)));
         }
-        tokens.input += value["input_tokens"].as_u64().unwrap_or(0);
-        tokens.output += value["output_tokens"].as_u64().unwrap_or(0);
-        tokens.cache_read += value["cache_read_tokens"].as_u64().unwrap_or(0);
+        tokens.add(&Tokens {
+            input: value["input_tokens"].as_u64().unwrap_or(0),
+            output: value["output_tokens"].as_u64().unwrap_or(0),
+            cache_read: value["cache_read_tokens"].as_u64().unwrap_or(0),
+            cache_write: 0,
+        });
     }
     started.map(|started| (started, tokens))
 }
 
-/// The first model name found in a conversation's metadata, if its database opens.
-fn model_from_db(path: &Path) -> Option<String> {
+/// The first model name found in a conversation's metadata. Errors when the database cannot be opened or read.
+fn model_from_db(path: &Path) -> rusqlite::Result<Option<String>> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    model_from_conn(&conn).ok().flatten()
+    )?;
+    model_from_conn(&conn)
 }
 
 fn model_from_conn(conn: &Connection) -> rusqlite::Result<Option<String>> {
@@ -139,6 +150,66 @@ mod tests {
                 cache_write: 0
             },
             "usage is summed over all transcript lines"
+        );
+    }
+
+    /// A conversation with a transcript, and its database content if `db` is given.
+    fn conversation_root(name: &str, db: Option<&str>) -> crate::testing::ScratchDir {
+        let root = crate::testing::ScratchDir::new(name);
+        let logs = root.join("brain/abc/.system_generated/logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("transcript.jsonl"),
+            r#"{"created_at":"2026-10-05T15:04:35Z","input_tokens":5}"#,
+        )
+        .unwrap();
+        if let Some(db) = db {
+            std::fs::create_dir_all(root.join("conversations")).unwrap();
+            std::fs::write(root.join("conversations/abc.db"), db).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_conversation_without_a_database_has_no_model_and_no_warning() {
+        let root = conversation_root("agy-no-db", None);
+
+        let read = read_sessions(&root).unwrap();
+
+        assert_eq!(read.sessions.len(), 1, "the conversation is still counted");
+        assert_eq!(read.sessions[0].model, None, "no database means no model");
+        assert_eq!(
+            read.models_unreadable, 0,
+            "a missing database is not a read failure"
+        );
+    }
+
+    #[test]
+    fn a_conversation_whose_database_cannot_be_read_is_counted_as_such() {
+        let root = conversation_root("agy-bad-db", Some("not a database"));
+
+        let read = read_sessions(&root).unwrap();
+
+        assert_eq!(read.sessions.len(), 1, "the conversation is still counted");
+        assert_eq!(
+            read.sessions[0].model, None,
+            "an unreadable database gives no model"
+        );
+        assert_eq!(
+            read.models_unreadable, 1,
+            "the unreadable model is counted so the report can warn about it"
+        );
+    }
+
+    #[test]
+    fn transcript_usage_stops_at_the_maximum_instead_of_overflowing() {
+        let line = r#"{"created_at":"2026-10-05T15:04:35Z","input_tokens":18446744073709551615}"#;
+        let text = format!("{line}\n{line}\n");
+        let (_, tokens) = parse_transcript(Cursor::new(text)).unwrap();
+        assert_eq!(
+            tokens.input,
+            u64::MAX,
+            "usage summed past u64::MAX stops at u64::MAX"
         );
     }
 

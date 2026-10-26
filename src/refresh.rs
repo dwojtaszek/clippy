@@ -1,12 +1,37 @@
 //! Saves a fresh price table and Droid models page together, or neither.
 
 use std::error::Error;
+use std::fmt;
+use std::io;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
 use crate::download::Downloads;
 use crate::{multipliers, prices};
+
+/// The multiplier save failed, and the price snapshot saved before it could not be removed.
+#[derive(Debug)]
+struct UndoFailed {
+    save: io::Error,
+    undo: io::Error,
+}
+
+impl fmt::Display for UndoFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}; the new price snapshot could not be removed: {}",
+            self.save, self.undo
+        )
+    }
+}
+
+impl Error for UndoFailed {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.undo)
+    }
+}
 
 /// Parses both downloads, then saves both snapshots.
 ///
@@ -25,13 +50,13 @@ pub fn apply(
     let prices = prices::parse_table(table, now)?;
     let multipliers = multipliers::parse_page(page, now)?;
     let prices_saved = prices::save(prices_dir, &prices)?;
-    if let Err(err) = multipliers::save(multipliers_dir, &multipliers) {
-        if prices_saved == prices::Refresh::Updated {
-            prices::remove_snapshot(prices_dir, now).map_err(|undo| {
-                format!("{err}; the new price snapshot could not be removed: {undo}")
-            })?;
+    if let Err(save) = multipliers::save(multipliers_dir, &multipliers) {
+        if prices_saved == prices::Refresh::Updated
+            && let Err(undo) = prices::remove_snapshot(prices_dir, now)
+        {
+            return Err(Box::new(UndoFailed { save, undo }));
         }
-        return Err(err.into());
+        return Err(save.into());
     }
     prices::record_check(prices_dir, now)?;
     Ok(())
@@ -75,6 +100,27 @@ mod tests {
 
     fn at() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 12, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn an_undo_failure_names_both_errors_and_keeps_the_undo_cause() {
+        let err: Box<dyn Error> = Box::new(UndoFailed {
+            save: io::Error::other("folder is a file"),
+            undo: io::Error::new(io::ErrorKind::PermissionDenied, "read-only folder"),
+        });
+        assert_eq!(
+            err.to_string(),
+            "folder is a file; the new price snapshot could not be removed: read-only folder",
+            "the message names the save error and the undo error"
+        );
+        let cause = err
+            .source()
+            .and_then(|source| source.downcast_ref::<io::Error>());
+        assert_eq!(
+            cause.map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied),
+            "the undo error is the source, so its kind is still available"
+        );
     }
 
     #[test]

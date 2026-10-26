@@ -36,6 +36,22 @@ fn offline_run_prints_the_report_and_warns_about_missing_snapshots() {
 }
 
 #[test]
+fn missing_home_variable_is_named_in_the_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_droid-usage"))
+        .arg("--offline")
+        .env_remove("HOME")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("HOME"),
+        "the error names the HOME variable: {stderr}"
+    );
+}
+
+#[test]
 fn unknown_argument_fails_and_is_named() {
     let home = ScratchDir::new("binary-bad-arg");
     let output = run_binary(&["--bogus"], &home);

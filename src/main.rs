@@ -14,7 +14,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = cli::parse_args(env::args().skip(1))?;
-    let home = PathBuf::from(env::var("HOME")?);
+    let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set")?);
     let stdout = if console::colors_enabled() {
         app::Stdout::Terminal
     } else {

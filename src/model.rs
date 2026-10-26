@@ -42,18 +42,21 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// All four counts added together.
+    /// All four counts added together, stopping at `u64::MAX`.
     #[must_use]
     pub const fn total(&self) -> u64 {
-        self.input + self.output + self.cache_read + self.cache_write
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
     }
 
-    /// Adds `other` to these counts.
+    /// Adds `other` to these counts, stopping each count at `u64::MAX`.
     pub const fn add(&mut self, other: &Self) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_read += other.cache_read;
-        self.cache_write += other.cache_write;
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_write = self.cache_write.saturating_add(other.cache_write);
     }
 }
 
@@ -82,44 +85,84 @@ pub struct Session {
     pub cost_usd: Option<f64>,
 }
 
-/// Sessions found by one reader, plus how many candidate entries were skipped as unreadable.
+/// Sessions found by one reader, plus what could not be read.
 #[derive(Debug, Default)]
 pub struct Read {
     /// Sessions that were read.
     pub sessions: Vec<Session>,
     /// Entries that looked like sessions but could not be read.
     pub skipped: usize,
+    /// Sessions read without a model name because their model lookup failed. They still count, with no model.
+    pub models_unreadable: usize,
 }
 
-/// Every file under `root` whose name ends with `suffix`, searched recursively.
+/// Files found under a folder, and how many folders or entries under it could not be read.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Matching files, sorted.
+    pub files: Vec<PathBuf>,
+    /// Folders and entries skipped because they could not be read.
+    pub unreadable: usize,
+}
+
+/// Every file under `root` whose name ends with `suffix`, searched recursively. A folder or entry under `root` that cannot be read is skipped and counted.
 ///
 /// # Errors
 ///
-/// Returns an error when `root` or a directory under it cannot be read.
-pub fn files_with_suffix(root: &Path, suffix: &str) -> io::Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
+/// Returns an error, naming `root`, when `root` itself cannot be read.
+pub fn files_with_suffix(root: &Path, suffix: &str) -> io::Result<Found> {
+    // Opening the root first makes a missing or unreadable root an error. Folders below it are skipped.
+    drop(
+        std::fs::read_dir(root)
+            .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", root.display())))?,
+    );
+    let mut found = Found::default();
     let mut seen = BTreeSet::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
         // A folder reached through a symlink, or a link back up the tree, is read once.
-        if !seen.insert(std::fs::canonicalize(&dir)?) {
+        // If the folder cannot be canonicalized, it is still checked as given, and the read below counts it.
+        let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !seen.insert(canonical) {
             continue;
         }
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(suffix))
-            {
-                found.push(path);
-            }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            found.unreadable += 1;
+            continue;
+        };
+        sort_entries(
+            entries.map(|entry| entry.map(|entry| entry.path())),
+            suffix,
+            &mut found,
+            &mut pending,
+        );
+    }
+    found.files.sort();
+    Ok(found)
+}
+
+/// Sorts one folder's entries: subfolders are queued in `pending` and matching files go to `found`. An entry that cannot be read is counted as unreadable.
+fn sort_entries(
+    entries: impl Iterator<Item = io::Result<PathBuf>>,
+    suffix: &str,
+    found: &mut Found,
+    pending: &mut Vec<PathBuf>,
+) {
+    for entry in entries {
+        let Ok(path) = entry else {
+            found.unreadable += 1;
+            continue;
+        };
+        if path.is_dir() {
+            pending.push(path);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(suffix))
+        {
+            found.files.push(path);
         }
     }
-    found.sort();
-    Ok(found)
 }
 
 /// Adds one source's sessions to `sessions`. Returns a warning when the source could not be read or skipped entries.
@@ -130,9 +173,18 @@ pub fn add_source<E: fmt::Display>(
 ) -> Option<String> {
     match result {
         Ok(read) => {
+            let mut notes = Vec::new();
+            if read.skipped > 0 {
+                notes.push(format!("skipped {} unreadable entries", read.skipped));
+            }
+            if read.models_unreadable > 0 {
+                notes.push(format!(
+                    "could not read the model of {} sessions",
+                    read.models_unreadable
+                ));
+            }
             sessions.extend(read.sessions);
-            (read.skipped > 0)
-                .then(|| format!("{name}: skipped {} unreadable entries", read.skipped))
+            (!notes.is_empty()).then(|| format!("{name}: {}", notes.join("; ")))
         }
         Err(err) => Some(format!("{name}: {err}")),
     }
@@ -207,6 +259,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn token_sums_stop_at_the_maximum_instead_of_overflowing() {
+        let full = Tokens {
+            input: u64::MAX,
+            output: u64::MAX,
+            cache_read: u64::MAX,
+            cache_write: u64::MAX,
+        };
+        assert_eq!(
+            full.total(),
+            u64::MAX,
+            "a total larger than u64::MAX stops at u64::MAX"
+        );
+        let mut tokens = Tokens {
+            input: u64::MAX,
+            ..Tokens::default()
+        };
+        tokens.add(&Tokens {
+            input: 1,
+            ..Tokens::default()
+        });
+        assert_eq!(
+            tokens.input,
+            u64::MAX,
+            "adding past u64::MAX stops at u64::MAX"
+        );
+    }
+
     fn one_session() -> Session {
         Session {
             source: Source::Agy,
@@ -223,7 +303,7 @@ mod tests {
         let mut sessions = Vec::new();
         let clean = Read {
             sessions: vec![one_session()],
-            skipped: 0,
+            ..Read::default()
         };
         assert_eq!(
             add_source::<io::Error>("agy", Ok(clean), &mut sessions),
@@ -239,6 +319,7 @@ mod tests {
         let skipped = Read {
             sessions: vec![one_session()],
             skipped: 2,
+            ..Read::default()
         };
         assert_eq!(
             add_source::<io::Error>("agy", Ok(skipped), &mut sessions),
@@ -249,6 +330,29 @@ mod tests {
             sessions.len(),
             2,
             "sessions from both reads accumulate in the list"
+        );
+    }
+
+    #[test]
+    fn unreadable_models_are_warned_about_alongside_skips() {
+        let mut sessions = Vec::new();
+        let read = Read {
+            sessions: vec![one_session()],
+            skipped: 1,
+            models_unreadable: 3,
+        };
+        assert_eq!(
+            add_source::<io::Error>("agy", Ok(read), &mut sessions),
+            Some(
+                "agy: skipped 1 unreadable entries; could not read the model of 3 sessions"
+                    .to_owned()
+            ),
+            "both kinds of trouble appear in one warning naming the source"
+        );
+        assert_eq!(
+            sessions.len(),
+            1,
+            "sessions with an unreadable model are still added"
         );
     }
 
@@ -294,6 +398,7 @@ mod tests {
 
         let mut names: Vec<String> = found
             .unwrap()
+            .files
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
@@ -316,7 +421,7 @@ mod tests {
 
         let found = files_with_suffix(&root, ".jsonl").unwrap();
 
-        assert_eq!(found.len(), 1, "found {found:?}");
+        assert_eq!(found.files.len(), 1, "found {found:?}");
     }
 
     #[cfg(unix)]
@@ -331,14 +436,70 @@ mod tests {
 
         let found = files_with_suffix(&root, ".jsonl").unwrap();
 
-        assert_eq!(found.len(), 1, "found {found:?}");
+        assert_eq!(found.files.len(), 1, "found {found:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_is_skipped_and_the_rest_is_still_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = ScratchDir::new("unreadable-folder");
+        let open = root.join("open");
+        let locked = root.join("locked");
+        fs::create_dir_all(&open).unwrap();
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(open.join("a.jsonl"), "").unwrap();
+        fs::write(locked.join("b.jsonl"), "").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let found = files_with_suffix(&root, ".jsonl");
+
+        // Restore access so the scratch folder can be removed, whatever the result.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let found = found.unwrap();
+        assert_eq!(
+            found.files.len(),
+            1,
+            "the readable folder's file is still found: {found:?}"
+        );
+        assert_eq!(
+            found.unreadable, 1,
+            "the locked folder is counted as unreadable"
+        );
     }
 
     #[test]
-    fn missing_root_is_an_error() {
+    fn an_unreadable_entry_is_counted_and_the_others_are_sorted() {
+        let entries = vec![
+            Ok(PathBuf::from("/nowhere/a.jsonl")),
+            Err(io::Error::other("entry vanished")),
+            Ok(PathBuf::from("/nowhere/notes.txt")),
+        ];
+        let mut found = Found::default();
+        let mut pending = Vec::new();
+
+        sort_entries(entries.into_iter(), ".jsonl", &mut found, &mut pending);
+
+        assert_eq!(
+            found.files,
+            [PathBuf::from("/nowhere/a.jsonl")],
+            "only the matching file is kept"
+        );
+        assert_eq!(
+            found.unreadable, 1,
+            "the entry that could not be read is counted"
+        );
+        assert!(pending.is_empty(), "no subfolder is queued");
+    }
+
+    #[test]
+    fn missing_root_is_an_error_that_names_the_root() {
+        let err = files_with_suffix(Path::new("/nonexistent-droid-usage-root"), ".jsonl")
+            .expect_err("a missing root folder is reported as an error");
         assert!(
-            files_with_suffix(Path::new("/nonexistent-droid-usage-root"), ".jsonl").is_err(),
-            "a missing root folder is reported as an error"
+            err.to_string().contains("/nonexistent-droid-usage-root"),
+            "the error names the root folder: {err}"
         );
     }
 }
