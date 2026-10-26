@@ -9,7 +9,7 @@ use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Tab
 use console::Style;
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{Session, Tokens};
+use crate::model::{Session, Tokens, count_f64};
 
 /// Rows in the Top projects table. A larger value makes only that table longer.
 const TOP_PROJECTS: usize = 10;
@@ -114,12 +114,8 @@ pub fn group_by<K: Ord>(sessions: &[Session], key: impl Fn(&Session) -> K) -> BT
 
 /// Percent change from `previous` to `current`. None when there is no previous value to compare against.
 #[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "token counts stay far below 2^53, and the result is a rounded percentage"
-)]
 pub fn change_percent(previous: u64, current: u64) -> Option<f64> {
-    (previous > 0).then(|| (current as f64 - previous as f64) * 100.0 / previous as f64)
+    (previous > 0).then(|| (count_f64(current) - count_f64(previous)) * 100.0 / count_f64(previous))
 }
 
 /// Groups sorted by session count (most first), then by key. A missing name (`None`) sorts before any name.
@@ -139,15 +135,14 @@ fn money(totals: &Totals) -> String {
 }
 
 /// The cost per million tokens over the priced sessions, or `-` when none of them has tokens.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "token counts stay far below 2^53, and the result is an estimate"
-)]
 fn per_million(totals: &Totals) -> String {
     if totals.priced_tokens == 0 {
         "-".to_owned()
     } else {
-        format!("{:.3}", totals.cost_usd * 1e6 / totals.priced_tokens as f64)
+        format!(
+            "{:.3}",
+            totals.cost_usd * 1e6 / count_f64(totals.priced_tokens)
+        )
     }
 }
 
@@ -468,6 +463,11 @@ mod tests {
     fn session_at_offset(offset: u32, input: u64) -> Session {
         let base = date(2026, 1, 1);
         session_on(base + Days::new(u64::from(offset)), input)
+    }
+
+    /// A session count as the `u64` the report sums.
+    fn as_u64(count: usize) -> u64 {
+        u64::try_from(count).expect("a test has few sessions")
     }
 
     /// Two weeks of sessions, the second one priced.
@@ -1027,7 +1027,7 @@ mod tests {
 
             let counted: u64 = weeks.iter().map(|(_, totals)| totals.sessions).sum();
             let tokens: u64 = weeks.iter().map(|(_, totals)| totals.tokens.total()).sum();
-            prop_assert_eq!(counted, sessions.len() as u64);
+            prop_assert_eq!(counted, as_u64(sessions.len()));
             prop_assert_eq!(tokens, sessions.iter().map(|s| s.tokens.total()).sum::<u64>());
         }
 
@@ -1048,9 +1048,9 @@ mod tests {
             let priced: u64 = weeks.iter().map(|(_, totals)| totals.priced).sum();
             let unpriced: u64 = weeks.iter().map(|(_, totals)| totals.unpriced).sum();
             let cost: f64 = weeks.iter().map(|(_, totals)| totals.cost_usd).sum();
-            prop_assert_eq!(with_usage, sessions.iter().filter(|s| s.tokens.total() > 0).count() as u64);
-            prop_assert_eq!(priced, sessions.iter().filter(|s| s.cost_usd.is_some()).count() as u64);
-            prop_assert_eq!(unpriced, sessions.iter().filter(|s| s.cost_usd.is_none() && s.tokens.total() > 0).count() as u64);
+            prop_assert_eq!(with_usage, as_u64(sessions.iter().filter(|s| s.tokens.total() > 0).count()));
+            prop_assert_eq!(priced, as_u64(sessions.iter().filter(|s| s.cost_usd.is_some()).count()));
+            prop_assert_eq!(unpriced, as_u64(sessions.iter().filter(|s| s.cost_usd.is_none() && s.tokens.total() > 0).count()));
             let expected: f64 = sessions.iter().filter_map(|s| s.cost_usd).sum();
             prop_assert!((cost - expected).abs() < 1e-6);
         }

@@ -12,7 +12,7 @@ use std::path::Path;
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde_json::{Map, Value, json};
 
-use crate::model::{Session, Source, Tokens, parse_timestamp};
+use crate::model::{Session, Source, Tokens, count_f64, parse_timestamp};
 
 /// The price table this module reads.
 pub const SOURCE_URL: &str =
@@ -236,15 +236,11 @@ fn lookup<'a>(rates: &'a BTreeMap<String, Rate>, model: &str) -> Option<&'a Rate
 
 /// Estimated USD cost of `tokens` at `rate`.
 #[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "token counts stay far below 2^53, and the result is an estimate"
-)]
 pub fn cost_usd(tokens: &Tokens, rate: &Rate) -> f64 {
-    tokens.input as f64 * rate.input
-        + tokens.output as f64 * rate.output
-        + tokens.cache_read as f64 * rate.cache_read
-        + tokens.cache_write as f64 * rate.cache_write
+    count_f64(tokens.input) * rate.input
+        + count_f64(tokens.output) * rate.output
+        + count_f64(tokens.cache_read) * rate.cache_read
+        + count_f64(tokens.cache_write) * rate.cache_write
 }
 
 /// Fills in `cost_usd` for sessions that have no recorded cost and a model the book prices. Sessions with a recorded cost keep it. Droid sessions are left out: they are priced by `multipliers::price_droid_sessions`.

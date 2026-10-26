@@ -57,6 +57,14 @@ impl Tokens {
     }
 }
 
+/// A count as `f64`, rounded the way `as` rounds. Each 32-bit half converts exactly with `f64::from`, so this needs no `as` cast.
+pub(crate) fn count_f64(count: u64) -> f64 {
+    // Both halves fit in 32 bits, so the fallbacks never run.
+    let high = u32::try_from(count >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(count & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
 /// One coding session, as read from its source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
@@ -144,6 +152,29 @@ mod tests {
 
     use super::*;
     use crate::testing::ScratchDir;
+
+    #[test]
+    fn counts_convert_to_f64_with_correct_rounding() {
+        // Exact values, and the rounding `as` would give: 2^53 + 1 is a tie that rounds to even, and u64::MAX rounds up to 2^64.
+        assert_eq!(count_f64(0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            count_f64(12_345_678_901).to_bits(),
+            12_345_678_901.0_f64.to_bits()
+        );
+        assert_eq!(count_f64(1 << 32).to_bits(), 4_294_967_296.0_f64.to_bits());
+        assert_eq!(
+            count_f64(1 << 53).to_bits(),
+            9_007_199_254_740_992.0_f64.to_bits()
+        );
+        assert_eq!(
+            count_f64((1 << 53) + 1).to_bits(),
+            9_007_199_254_740_992.0_f64.to_bits()
+        );
+        assert_eq!(
+            count_f64(u64::MAX).to_bits(),
+            18_446_744_073_709_551_616.0_f64.to_bits()
+        );
+    }
 
     #[test]
     fn tokens_total_and_add() {
